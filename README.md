@@ -1,12 +1,14 @@
 # Ledgerline
 
-Open-source seller-side toolkit for turning x402 + Circle Gateway Nanopayments into
-finance-grade revenue: a drop-in adapter, a verifiable receipt/commitment pipeline, and
-an on-chain audit anchor on Arc.
+Open-source seller-side toolkit for x402 + Circle Gateway Nanopayments. The goal: turn paid
+agent/API calls into finance-grade revenue — a drop-in adapter, a verifiable
+receipt/commitment pipeline, and an on-chain audit anchor on Arc.
 
-> **Status: Milestone 0 (pre-alpha).** This repo is the **OSS layer** — the seller adapter,
-> demo apps, the canonicalization + verifier libraries, and the Arc anchor contract. The
-> hosted reconciliation/dashboard platform is a separate product.
+> **Status: Milestone 0 (pre-alpha).** This is the **OSS layer**, and most of it is still
+> scaffold: the adapter is a no-op stub, canonicalization is a placeholder (not yet a
+> standards JCS serializer), and the verifier + Arc anchor contract are **planned, not yet
+> built**. What works today is the credential-free quickstart below. The hosted
+> reconciliation/dashboard platform is a separate product.
 
 ## What's here
 
@@ -28,9 +30,11 @@ Requires **Node 22+**, **pnpm 10**, **Docker**.
 pnpm install
 pnpm db:up                 # first run pulls postgres:16 (~1 min+)
 cp .env.example .env
-pnpm db:migrate            # creates 3 tables: tenants, seller_endpoints, raw_events
+pnpm db:migrate            # waits for Postgres ("waiting for postgres..." on a cold start is normal),
+                           # then creates 3 tables: tenants, seller_endpoints, raw_events
 pnpm typecheck
 pnpm dev                   # seller on :4021 — curl http://localhost:4021/healthz
+pnpm dev:buyer             # prints a friendly "blocked on Track A" message and exits (credential-free)
 ```
 
 The live `402 → pay → 200` loop needs Arc Testnet wallets + testnet USDC; see `SPIKE.md`

@@ -1,5 +1,4 @@
--- Milestone 0: the three tables the demo needs. DDL rendered from the technical
--- build plan (§7.1 tenants, §7.2 seller_endpoints, §7.4 raw_events).
+-- Milestone 0: the three tables the demo needs (tenants, seller_endpoints, raw_events).
 create extension if not exists pgcrypto;  -- provides gen_random_uuid()
 
 create table if not exists tenants (
