@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ledgerline-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ledgerline
+      POSTGRES_PASSWORD: ledgerline
+      POSTGRES_DB: ledgerline
+    # Host port 5433 (not 5432) to avoid clashing with a native/Homebrew Postgres on 5432.
+    ports:
+      - '5433:5432'
+    volumes:
+      - ledgerline_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ledgerline -d ledgerline']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  ledgerline_pgdata:
