@@ -41,6 +41,9 @@ importers:
       '@ledgerline/express':
         specifier: workspace:*
         version: link:../../packages/express
+      '@ledgerline/seller-client':
+        specifier: workspace:*
+        version: link:../../packages/seller-client
       '@x402/core':
         specifier: ^2.3.0
         version: 2.13.0
@@ -50,6 +53,9 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
       viem:
         specifier: ^2.51.0
         version: 2.51.3(typescript@5.9.3)(zod@3.25.76)
@@ -57,6 +63,9 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
 
   packages/db:
     dependencies:
@@ -69,6 +78,10 @@ importers:
         version: 8.20.0
 
   packages/express:
+    dependencies:
+      '@ledgerline/seller-client':
+        specifier: workspace:*
+        version: link:../seller-client
     devDependencies:
       '@types/express':
         specifier: ^5.0.6
@@ -78,10 +91,6 @@ importers:
         version: 5.2.1
 
   packages/seller-client:
-    dependencies:
-      pg:
-        specifier: ^8.21.0
-        version: 8.21.0
     devDependencies:
       '@types/pg':
         specifier: ^8.20.0

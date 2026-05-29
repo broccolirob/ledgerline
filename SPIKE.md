@@ -21,8 +21,9 @@ RUNTIME-only (needs the live Arc Testnet loop, i.e. Track A credentials).
 ## C. Payment context for the raw_event (M0 ACCEPTANCE GATE item)
 - [x] `req.payment` shape CONFIRMED: `{ verified: boolean; payer: string; amount: string; network: string; transaction?: string }`.
 - [x] **No Payment-Identifier and no signed offer/receipt are surfaced by Circle's middleware.** -> SDK limitation **DOCUMENTED** (satisfies the M0 gate "Payment-Identifier captured OR limitation documented"). The raw_event idempotency key must be a **Ledgerline receipt analog** (Path C, DECISION_LOG D-0001).
-- [ ] **RUNTIME:** is `transaction` populated at 200-time, given Nanopayments settle ASYNCHRONOUSLY (batched)? Likely not. Record what's observable in the live loop.
-- [x] `canonicalHash()` preserves NESTED keys via a recursive `stableStringify` (regression guard lives in `@ledgerline/seller-client`; add a unit test).
+- [x] **RUNTIME CONFIRMED (M1 capture, 2026-05-29):** `transaction` IS populated at 200-time — but as an **opaque Gateway transfer UUID** (e.g. `76ec053d-…`), not an on-chain tx hash (consistent with async batched settlement; matches the plan's `settlement_reference` "opaque; do not assume tx hash"). Unique per payment, so it's the idempotency anchor. The buyer's payment authorization arrives in the **`payment-signature`** request header (base64 x402 payload: EIP-3009 authorization + signature + nonce + accepted offer); captured as `paymentSignatureHash`, never raw, never called a "signed receipt".
+- [x] **CAPTURE WIRED:** the Express recorder writes ONE `ledgerline.receipt_analog.v1` raw_event per delivered paid call (request fingerprint + redacted `req.payment` + delivery), idempotent on the settlement UUID. Verified live: 2 paid calls → 2 rows; duplicate `(tenant_id, idempotency_key)` rejected; payer / signature / URL stored only as hashes. **Closes the last credential-dependent M0 gate item.**
+- [x] `canonicalHash()` preserves NESTED keys via a recursive `stableStringify`; payload is JSON-normalized once so the stored jsonb and `canonical_hash` cover identical bytes (regression guard in `@ledgerline/seller-client`; add a unit test).
 
 ## D. Buyer client surface
 - [x] `new GatewayClient({ chain: SupportedChainName; privateKey: Hex; rpcUrl? })`; `'arcTestnet'` valid (domain 26).

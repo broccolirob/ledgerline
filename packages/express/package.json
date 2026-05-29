@@ -9,6 +9,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "@ledgerline/seller-client": "workspace:*"
+  },
   "peerDependencies": {
     "express": "^5.0.0"
   },

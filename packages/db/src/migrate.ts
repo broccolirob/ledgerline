@@ -1,6 +1,6 @@
-// Dependency-light migration runner: applies migrations/0001_init.sql via `pg`.
+// Dependency-light migration runner: applies every migrations/*.sql in sorted order.
 // Run: pnpm db:migrate  (or, from this package: pnpm --filter @ledgerline/db migrate)
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Client } from 'pg';
@@ -10,12 +10,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 async function main(): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DSN;
-  const sql = await readFile(join(here, 'migrations', '0001_init.sql'), 'utf8');
+  const dir = join(here, 'migrations');
+  const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort();
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    await client.query(sql);
-    console.log('migration 0001_init applied');
+    for (const f of files) {
+      const sql = await readFile(join(dir, f), 'utf8');
+      await client.query(sql);
+      console.log('applied', f);
+    }
   } finally {
     await client.end();
   }

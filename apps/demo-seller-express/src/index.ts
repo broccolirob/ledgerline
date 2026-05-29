@@ -1,8 +1,14 @@
-// Demo x402 seller behind Circle Gateway Nanopayments.
+// Demo x402 seller behind Circle Gateway Nanopayments, with Ledgerline raw_event capture.
 // dev: pnpm dev   (-> tsx watch --env-file-if-exists=../../.env src/index.ts)
 import express, { type Request, type Response, type RequestHandler } from 'express';
-import { createGatewayMiddleware, type PaymentRequest } from '@circle-fin/x402-batching/server';
+import { Pool } from 'pg';
+import { createGatewayMiddleware } from '@circle-fin/x402-batching/server';
 import { ledgerlineRecorder } from '@ledgerline/express';
+import { makePostgresSink } from '@ledgerline/seller-client';
+
+const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerline';
+// Demo tenant, seeded by migration 0002. The raw_events FK -> tenants requires this row to exist.
+const DEMO_TENANT_ID = '00000000-0000-4000-8000-000000000001';
 
 const app = express();
 app.use(express.json());
@@ -13,13 +19,9 @@ app.get('/healthz', (_req: Request, res: Response) => {
 });
 
 // ---- CREDENTIAL BOUNDARY ----------------------------------------------------
-// SELLER_ADDRESS is supplied by Track A. Until it lands, the paid route is NOT mounted,
-// so the server still boots and /healthz responds. The moment SELLER_ADDRESS is set in
-// .env, the paid loop comes up with no code change.
-//
-// IMPORTANT: because the route mounts only when SELLER_ADDRESS is set, the
-// "unpaid request -> 402" acceptance check is ALSO Track-A-gated. With no SELLER_ADDRESS,
-// POST /api/company-brief is absent and returns 404, NOT 402.
+// SELLER_ADDRESS is supplied by Track A. Until it lands, the paid route is NOT mounted, so the
+// server still boots and /healthz responds. With no SELLER_ADDRESS, POST /api/company-brief is
+// absent and returns 404 (not 402).
 const sellerAddress = process.env.SELLER_ADDRESS;
 
 if (!sellerAddress) {
@@ -30,27 +32,27 @@ if (!sellerAddress) {
 } else {
   const gateway = createGatewayMiddleware({
     sellerAddress,
-    // The SDK defaults facilitatorUrl to MAINNET; pass the testnet URL explicitly.
-    // (Confirmed in dist/server/index.d.mts.) Verify against current Circle docs.
     facilitatorUrl: process.env.FACILITATOR_URL ?? 'https://gateway-api-testnet.circle.com',
     networks: ['eip155:5042002'], // Arc Testnet CAIP-2 (chain id 5042002) — SELLER side only
   });
 
-  // gateway.require() returns the SDK's MiddlewareFunction (http-based req/res). It is
-  // runtime-compatible with Express; cast to RequestHandler so the static types line up.
+  // Local Postgres sink: each delivered paid call writes ONE raw_event (the Ledgerline receipt
+  // analog). The pool is lazy — it only connects on the first capture.
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
+  const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+  const sink = makePostgresSink(pool, { tenantId });
+
   app.post(
     '/api/company-brief',
     gateway.require('$0.003') as unknown as RequestHandler, // 3000 atomic USDC units
-    ledgerlineRecorder({ tenantId: process.env.LEDGERLINE_TENANT_ID, schemaVersion: 'm0.1' }),
-    (req: Request, res: Response) => {
-      // CONFIRMED req.payment shape: { verified, payer, amount, network, transaction? }.
-      // No Payment-Identifier and no signed offer/receipt are surfaced — so the raw_event
-      // idempotency key must be a Ledgerline receipt analog (request fingerprint + settlement
-      // context), per DECISION_LOG D-0001 (Path C). Capture wiring is deferred until the
-      // capture-path spike lands; for M0 we return the canned brief.
-      const payment = (req as unknown as PaymentRequest).payment;
-      void payment; // -> writeRawEvent(...) from @ledgerline/seller-client once Path C is wired
-
+    ledgerlineRecorder({
+      endpointId: 'company-brief-v1',
+      schemaVersion: 'm1.1',
+      payTo: sellerAddress,
+      sink, // captured on res 'finish' -> writeRawEvent into Postgres
+    }),
+    (_req: Request, res: Response) => {
+      // Canned output for M0/M1. The recorder captures the paid-delivery analog on finish.
       res.json({
         company: 'Acme Corp',
         brief: 'Canned M0 company brief. Real generation is deferred past Milestone 0.',

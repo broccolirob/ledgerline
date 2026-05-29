@@ -10,13 +10,16 @@
   },
   "dependencies": {
     "@ledgerline/express": "workspace:*",
+    "@ledgerline/seller-client": "workspace:*",
     "@circle-fin/x402-batching": "^3.0.4",
     "@x402/core": "^2.3.0",
     "@x402/evm": "^2.3.0",
     "express": "^5.2.1",
-    "viem": "^2.51.0"
+    "viem": "^2.51.0",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6"
+    "@types/express": "^5.0.6",
+    "@types/pg": "^8.20.0"
   }
 }
