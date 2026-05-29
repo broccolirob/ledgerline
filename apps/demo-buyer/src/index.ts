@@ -28,12 +28,10 @@ async function main(): Promise<void> {
 
   if (balances.gateway.available <= 0n) {
     console.warn(
-      '[demo-buyer] No Gateway balance — run the ONE-TIME on-chain deposit first, e.g. ' +
-        "await gateway.deposit('1'). On Arc Testnet, USDC is the gas token (fund USDC only); " +
-        'the deposit tx must confirm before pay() works. Then re-run pnpm dev:buyer.',
+      '[demo-buyer] No Gateway balance — fund the buyer first with a one-time deposit: ' +
+        '`pnpm deposit` (deposits 1 USDC; or `DEPOSIT_USDC=5 pnpm deposit`). On Arc Testnet, USDC ' +
+        'is the gas token (fund USDC only); the deposit tx must confirm before pay() works.',
     );
-    // One-time deposit (opt-in; uncomment once funded — do NOT leave on or it re-deposits each run):
-    // await gateway.deposit('1');
     return;
   }
 
