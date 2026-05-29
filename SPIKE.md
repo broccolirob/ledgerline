@@ -16,7 +16,7 @@ RUNTIME-only (needs the live Arc Testnet loop, i.e. Track A credentials).
 - [x] `gateway.require(price: string) -> MiddlewareFunction` (also exposes `.verify`, `.settle`).
 - [x] `facilitatorUrl` DEFAULTS TO MAINNET (`https://gateway-api.circle.com`); the testnet URL `https://gateway-api-testnet.circle.com` must be passed explicitly (confirmed in the `.d.mts` doc comment). The seller code does this.
 - [x] The middleware wires the facilitator + scheme internally. Lower-level path (relevant to §E): `new x402ResourceServer([new BatchFacilitatorClient({url})]).register('eip155:5042002', new GatewayEvmScheme())`.
-- [ ] **RUNTIME (core M0 assumption):** does `gateway.require('$0.003')` (sub-cent / 3000 atomic) parse, or reject >2 decimals? The type accepts any string; `parsePrice` behavior at 3 decimals is unconfirmed. **Test in the live loop.**
+- [x] **RUNTIME CONFIRMED (2026-05-29, live Arc Testnet loop):** `gateway.require('$0.003')` parses sub-cent fine — unpaid POST returned **402**, the buyer paid **0.003 USDC**, and the seller returned **200** with the brief. The full `402 -> pay -> 200` loop works end-to-end. (Buyer funded via a one-time `gateway.deposit('1')`; deposit + pay confirmed.)
 
 ## C. Payment context for the raw_event (M0 ACCEPTANCE GATE item)
 - [x] `req.payment` shape CONFIRMED: `{ verified: boolean; payer: string; amount: string; network: string; transaction?: string }`.
