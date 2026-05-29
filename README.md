@@ -4,17 +4,20 @@ Open-source seller-side toolkit for x402 + Circle Gateway Nanopayments. The goal
 agent/API calls into finance-grade revenue — a drop-in adapter, a verifiable
 receipt/commitment pipeline, and an on-chain audit anchor on Arc.
 
-> **Status: Milestone 0 (pre-alpha).** This is the **OSS layer**, and most of it is still
-> scaffold: the adapter is a no-op stub, canonicalization is a placeholder (not yet a
-> standards JCS serializer), and the verifier + Arc anchor contract are **planned, not yet
-> built**. What works today is the credential-free quickstart below. The hosted
-> reconciliation/dashboard platform is a separate product.
+> **Status: Milestone 0 complete (pre-alpha).** The demo flow works end to end: a paid x402 call
+> over Circle Gateway Nanopayments on Arc Testnet is captured into Postgres as a **Ledgerline
+> receipt analog** (request fingerprint + redacted payment context + delivery). That analog is
+> **not** an official x402 *signed receipt* — producing the official artifact (Path B) is
+> spike-proven achievable and is the next receipt milestone (see `DECISION_LOG.md` D-0001).
+> Canonicalization is still an M0 placeholder, and the split engine, double-entry ledger,
+> verifier, and Arc anchor are **planned, not yet built**. The hosted reconciliation/dashboard
+> platform is a separate product.
 
 ## What's here
 
 | Path | Package | Role |
 |------|---------|------|
-| `packages/express` | `@ledgerline/express` | Drop-in seller adapter (M0: stub) |
+| `packages/express` | `@ledgerline/express` | Drop-in seller adapter — captures the receipt analog on response finish (M1) |
 | `packages/seller-client` | `@ledgerline/seller-client` | Raw-event write path + split helper |
 | `packages/db` | `@ledgerline/db` | Local event-store schema + migration |
 | `apps/demo-seller-express` | — | Example x402 seller behind Circle Gateway Nanopayments |
