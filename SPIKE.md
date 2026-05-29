@@ -35,8 +35,8 @@ RUNTIME-only (needs the live Arc Testnet loop, i.e. Track A credentials).
 ## E. Signed Offers & Receipts capture-path investigation (Path A/B/C)
 - **Finding (type-level):** `createGatewayMiddleware` exposes **no `registerExtension` / `x402ResourceServer` seam**. But the package exports `BatchFacilitatorClient` + `GatewayEvmScheme`, and the `.d.mts` documents the lower-level pattern `new x402ResourceServer([circleClient]).register('eip155:5042002', new GatewayEvmScheme())`. So **Path A likely requires dropping from the convenience middleware down to the `x402ResourceServer` level** and registering the official offer-receipt extension there (this is closer to "Path B" in structure). **Decision stays OPEN** pending the timeboxed wiring attempt.
 - [ ] DEDICATED SIGNING KEY: provision a separate EOA (never the payment address) for the offer/receipt issuer.
-- [ ] Attempt the `x402ResourceServer` + offer-receipt-extension wiring (TIMEBOX ~2-3 days). If it resists, fall back to Path C.
+- [x] **DONE (2026-05-29) — PASS.** Spike `apps/spike-receipt` produced + independently verified an EIP-712 signed offer + receipt (recovered signer == dedicated key), and `x402ResourceServer` + `BatchFacilitatorClient` + `GatewayEvmScheme` + the offer-receipt extension (`@x402/extensions@2.13.0`) registered and `initialize()`'d against Circle testnet. Known type-skew (Circle's bundled x402 types vs `@x402/core@2.13.0`) needs a cast / version-pin. **Path B is achievable.**
 - [x] PATH C — Ledgerline receipt analog (request fingerprint + delivery record, no Payment-Identifier available) is buildable purely from `req.payment` + request metadata. Guaranteed fallback that satisfies the M0 gate.
 
 ## F. Decision
-- [ ] Record the A/B/C decision + evidence in `DECISION_LOG.md` (D-0001) after the timeboxed attempt.
+- [x] **DECIDED (2026-05-29):** A ruled out, **B achievable (spike-proven)**, C is the working interim. Full record + evidence in `DECISION_LOG.md` D-0001. Sequencing (B before vs after the grant demo) is the founder's call.

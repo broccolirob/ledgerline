@@ -2,28 +2,41 @@
 
 ## D-0001 — Signed Offers & Receipts capture path (A / B / C)
 
-- **Status:** OPEN (decide after the timeboxed wiring attempt; see `SPIKE.md` §E).
+- **Status:** DECIDED — 2026-05-29. **Path B is achievable (spike-proven); A is ruled out; C is the working interim.**
 - **Context:** Milestone 0 must decide and document how (if at all) we capture the OFFICIAL
-  x402 Signed Offers & Receipts artifact, vs. falling back to a Ledgerline receipt analog.
-- **Finding (2026-05-28, from the installed `@circle-fin/x402-batching@3.0.4` types):**
-  - `req.payment` exposes only `{ verified, payer, amount, network, transaction? }` — **no
-    Payment-Identifier, no signed offer/receipt**. So Circle's middleware alone cannot yield
-    the official artifact, and Payment-Identifier capture is **not available** via the middleware
-    (SDK limitation documented — satisfies the M0 gate).
-  - `createGatewayMiddleware` exposes **no extension seam**. The official path most likely
-    requires the lower-level `new x402ResourceServer([new BatchFacilitatorClient({url})])
-    .register('eip155:5042002', new GatewayEvmScheme())` and registering the offer-receipt
-    extension there — structurally closer to Path B than Path A.
-- **Options:**
-  - **Path A** — official extension on the same server Circle's middleware fronts. Likely NOT
-    possible via `createGatewayMiddleware` (no seam); would mean dropping to `x402ResourceServer`.
-  - **Path B** — parallel `x402ResourceServer` wired to `BatchFacilitatorClient` + `GatewayEvmScheme`,
-    register the official extension there. Plausible given the exported building blocks; UNVERIFIED
-    end-to-end. Timebox ~2-3 days.
-  - **Path C** — Ledgerline receipt analog (request fingerprint + delivery record; no Payment-Identifier
-    available). Buildable today from `req.payment` + request metadata. Never called a "signed receipt".
-- **Timebox rule:** attempt the official path (B-shaped) ~2-3 days; if it resists, ship Path C.
-- **Decision:** _TBD_  | **Evidence:** _link spike code / output_  | **Date / decider:** _TBD / founder_
+  x402 Signed Offers & Receipts artifact, vs. a Ledgerline receipt analog.
+- **Path A — RULED OUT.** Circle's convenience `createGatewayMiddleware` exposes no
+  `registerExtension` seam and `req.payment` carries no signed offer/receipt (only
+  `{ verified, payer, amount, network, transaction }`). The official extension cannot attach to it.
+- **Path B — ACHIEVABLE (spike-proven, `apps/spike-receipt`).** The official x402 *Signed Offers &
+  Receipts* extension ships in `@x402/extensions@2.13.0` (`./offer-receipt`, version-aligned with
+  `@x402/core@2.13.0`). The spike (run 2026-05-29):
+  - produced an **EIP-712 signed offer + receipt** with a **dedicated signing key** (distinct from
+    the payment address) and **independently verified both** — the recovered signer matches the
+    dedicated key (third-party-verifiable without trusting our DB);
+  - registered the extension on `new x402ResourceServer(BatchFacilitatorClient).register(
+    'eip155:5042002', GatewayEvmScheme).registerExtension(offerReceipt)` and ran `server.initialize()`
+    **successfully against Circle's live testnet facilitator** — the official extension **composes
+    with Circle's stack**.
+  - **Known wrinkle (real):** `@circle-fin/x402-batching` bundles slightly-older x402 interfaces, so
+    its `FacilitatorClient`/`SchemeNetworkServer` are **type-incompatible** with `@x402/core@2.13.0`
+    (runtime-compatible). The B implementation should pin `@x402/core` to the version Circle built
+    against (or keep narrow, documented casts).
+  - **Remaining (low-risk, not an achievability blocker):** the live HTTP loop — the extension's
+    `enrichPaymentRequiredResponse` / `enrichSettlementResponse` hooks firing on a real 402/200 via
+    `paymentMiddleware` + `RouteConfig.extensions`, and the buyer extracting the receipt. Registration
+    + initialization succeeded, so this is integration work for the B milestone.
+- **Path C — WORKING INTERIM.** The M1 Ledgerline receipt analog (request fingerprint + redacted
+  `req.payment` + delivery, idempotent on the Gateway settlement UUID) is built and live in
+  `@ledgerline/seller-client` + `@ledgerline/express`. Honest fallback; never called a "signed receipt".
+- **Decision:** pursue **B** for official, independently-verifiable receipts (the §12 moat).
+  Recommended sequencing: ship the grant demo on **C now** (working, no-overclaim), implement **B** as
+  the next receipt milestone (lower-level `x402ResourceServer` + `paymentMiddleware`, `@x402/core`
+  version-pinned). Founder to confirm whether B lands before or after the grant demo.
+- **Evidence:** `apps/spike-receipt/src/server.ts` — output 2026-05-29: offer + receipt verified
+  (recovered signer == dedicated key), `hasExtension('offer-receipt') = true`, `server.initialize()` OK.
+- **No-overclaim:** until B's HTTP loop ships and verifies end-to-end, external copy says
+  "Ledgerline receipt analog," not "signed receipt".
 
 ## D-0002 — Toolchain pins (decided 2026-05-28)
 

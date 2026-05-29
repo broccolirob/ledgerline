@@ -1,0 +1,22 @@
+{
+  "name": "@ledgerline/spike-receipt",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx --env-file-if-exists=../../.env src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@circle-fin/x402-batching": "^3.0.4",
+    "@x402/core": "^2.13.0",
+    "@x402/evm": "^2.13.0",
+    "@x402/extensions": "^2.13.0",
+    "@x402/express": "^2.13.0",
+    "express": "^5.2.1",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
+  }
+}
