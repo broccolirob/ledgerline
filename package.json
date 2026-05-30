@@ -14,11 +14,17 @@
     "db:up": "docker compose -f infra/docker-compose.yml up -d",
     "db:down": "docker compose -f infra/docker-compose.yml down",
     "db:wait": "until docker exec ledgerline-pg psql -U ledgerline -d ledgerline -c 'select 1' >/dev/null 2>&1; do echo 'waiting for postgres...'; sleep 1; done; echo 'postgres ready'",
-    "db:migrate": "pnpm run db:wait && pnpm --filter @ledgerline/db migrate"
+    "db:migrate": "pnpm run db:wait && pnpm --filter @ledgerline/db migrate",
+    "recognize": "pnpm --filter @ledgerline/recognition recognize",
+    "export:csv": "pnpm --filter @ledgerline/recognition export:csv",
+    "audit:balance": "pnpm --filter @ledgerline/recognition run audit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
     "tsx": "^4.22.3",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
   }
 }

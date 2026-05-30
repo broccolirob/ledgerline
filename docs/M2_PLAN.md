@@ -2,6 +2,11 @@
 
 **Implementation PLAN (approve before coding). No production code below — exact DDL, signatures, and posting-template shapes only.**
 
+> **Post-review revisions (2026-05-29).** Three fixes folded in after a plan/codebase audit:
+> 1. **Seed idempotency (HIGH).** `split_rules` has only a `uuid` PK and no natural unique key, and `migrate.ts` re-runs every `*.sql` on every invocation — so a bare `on conflict do nothing` would *not* dedupe it, and each migrate would insert four more rules and corrupt the split. `0004` now seeds `split_rules` with **deterministic literal UUIDs** + `on conflict (id) do nothing`; `pricing_models` / `split_groups` conflict on their `(tenant_id, name, version)` natural key (§2 preamble, §2.2, §8, §7.2 seed-idempotency test).
+> 2. **`resolveLedgerAccount` conflict/return contract (MED).** Pinned the insert→`on conflict (<exact natural-key expression>) do nothing`→`select` fallback, since `do nothing` returns no row on a hit and the unique key is an *expression* index (§2.3, §4.2).
+> 3. **`endpoint_id` is NULL in M2 (LOW).** No `seller_endpoints` row is seeded and `RecognitionConfig` carries no endpointId, so both `interactions.endpoint_id` and `service_deliveries.endpoint_id` are written NULL against their nullable FKs (§2.4).
+
 Milestone-label note: the build plan numbers the §18.3 ledger DDL + posting templates + invariants as its "Milestone 3 — split accounting"; the prompt collapses recognition (build-plan Milestone 2 "revenue subledger") and posting (build-plan Milestone 3 "split accounting") into one milestone called **M2**. This plan implements that combined scope: a delivered, paid `raw_event` becomes an `earned` `revenue_event` **and** a balanced `journal_transaction` + `ledger_entries`. Integer atomic-unit math only; no-overclaim discipline throughout.
 
 **Repo facts this plan is built against (verified against the live tree):**
@@ -81,6 +86,8 @@ In M2, `collection_state.status` is **always written as `open_receivable` and ne
 New file: `/Users/broccolirob/Projects/ledgerline/packages/db/src/migrations/0003_revenue_recognition.sql`.
 
 **Idempotency requirement (hard constraint from the runner):** `migrate.ts` re-runs every `*.sql` on every invocation with no applied-tracking table, sending the whole file as one `client.query()` (simple-query protocol; Postgres splits statements on `;`; no bind parameters allowed anywhere in the file). **Every statement must use `create table if not exists` / `create index if not exists` / `insert … on conflict do nothing`.** Inline `check (…)` clauses inside a `create table if not exists` are safe on re-run (the table is skipped if present); do NOT use `alter table … add constraint` (not idempotent without a guard). A single statement error aborts the whole file's implicit transaction, so the `if not exists` guards must all hold on re-run.
+
+**`on conflict do nothing` only dedupes against a constraint that actually fires.** It is a no-op guard, not a magic idempotency switch: an `insert` "does nothing" on re-run only if it violates a real PK/UNIQUE constraint. A seed row therefore needs *either* a natural unique key to conflict on *or* a deterministic literal PK — otherwise the re-run-every-time runner inserts a fresh duplicate every invocation. This bites exactly one table here: `split_rules` has only a `uuid` PK and **no** natural unique key (§2.2), so its seed must use deterministic literal UUIDs and `on conflict (id) do nothing`. `pricing_models` and `split_groups` are safe via their `(tenant_id, name, version)` unique key. Runtime-created `ledger_accounts` dedupe via the natural-key index (§2.3); every other M2 table is written only by the recognition pass, which makes re-runs no-ops via `posting_key` and the other unique constraints (§4.3) — none of them are seeded.
 
 Use `uuid` PKs with no DB-side default generation (the recognition module supplies `randomUUID()`). New tables intentionally use `uuid` PKs; `raw_events.id` stays `text` (legacy) and is never coerced to uuid. `numeric(78,0)` for all atomic amounts, parsed in TS via integer-safe paths (see §4.4).
 
@@ -179,6 +186,8 @@ create table if not exists split_rules (
 
 M2 enforces `revenue_treatment='principal_gross'`, `reserve_treatment='none'` at runtime. `fixed_amount_atomic` / `match_conditions` / `priority` / `rounding_mode` are schema-present but the mixed fixed+percentage base semantics are runtime-rejected (deferred §18.14). Demo group is pure-percentage (`publisher` 7000 / `model_provider` 2000 / `data_provider` 700 / `referrer` 300 bps = 10000), so the deferred fixed-vs-percentage base ambiguity does not bite and dust is zero.
 
+**Seed idempotency (no schema constraint added — keeps canonical §7.10 shape).** `split_rules` deliberately keeps only its `uuid` PK (no natural unique key), exactly as canonical §7.10. M2 never writes `split_rules` at runtime — it is **seed-only** (the recognition module *reads* the demo rules, §4) — so the PK alone is a sufficient idempotency anchor: `0004` seeds the four rows with **deterministic literal UUIDs** (constants in the SQL file) and `on conflict (id) do nothing`. *Considered and rejected:* adding `unique (split_group_id, recipient_id)` would also make the seed idempotent, but it would forbid the legitimate deferred case of one recipient holding both a fixed and a percentage rule (§18.14) — constraining a deferred design surface the plan is otherwise careful to leave open. Deterministic seed UUIDs close the hole without that cost.
+
 ### 2.3 `ledger_accounts` (§18.3 canonical — supersedes §7.11)
 
 ```sql
@@ -219,6 +228,8 @@ create unique index if not exists ledger_accounts_natural_key
   on ledger_accounts (tenant_id, account_type, owner_type, coalesce(owner_id, '00000000-0000-0000-0000-000000000000'::uuid), asset);
 ```
 
+**Account resolution — the `on conflict` contract (load-bearing for `resolveLedgerAccount`, §4.2).** Because the unique key is an **expression** index, `resolveLedgerAccount`'s `insert … on conflict (…) do nothing` must restate the *exact* inference expression — `(tenant_id, account_type, owner_type, coalesce(owner_id, '00000000-0000-0000-0000-000000000000'::uuid), asset)` — to match the index, and seller-owned legs must bind `owner_id` as the same sentinel (`'00000000-0000-0000-0000-000000000000'::uuid`) so they collapse onto one row. `on conflict do nothing` returns **no** row on a hit, so account resolution uses the same insert→do-nothing→`select` fallback as `interactions` / `revenue_events` (§4.3), never assuming `RETURNING` produced a row.
+
 **Canonical-account fidelity (§18.3 "Recommended accounts"), load-bearing for the live R1′ path.** The natural-key index keys on `owner_id`; to avoid silently fanning out per-supplier expense accounts, the live R1′ path resolves these **single seller-owned** accounts (owner_type=`seller`, owner_id=NULL) for all expense legs:
 - `Receivable — seller` = (`receivable`, `seller`, NULL)
 - `Revenue — seller` = (`revenue`, `seller`, NULL)
@@ -250,7 +261,7 @@ create table if not exists interactions (
 );
 ```
 
-M2 writes `interaction_type='purchase'`, `status='delivered'` on the recognize path; `status='failed'` (forward-compat `'canceled'`) on the F1 path for traceability. `payment_identifier` = the raw_events idempotency anchor (`settlementReference ?? paymentSignatureHash ?? requestFingerprint`), giving a natural per-purchase unique key. `request_fingerprint` and `payer_address_hash` are `bytea`: the hex is **`0x`-prefixed**, so the recognition module **strips the leading `0x` before `decode(hex, 'hex')`** (see §4.4).
+M2 writes `interaction_type='purchase'`, `status='delivered'` on the recognize path; `status='failed'` (forward-compat `'canceled'`) on the F1 path for traceability. `payment_identifier` = the raw_events idempotency anchor (`settlementReference ?? paymentSignatureHash ?? requestFingerprint`), giving a natural per-purchase unique key. `request_fingerprint` and `payer_address_hash` are `bytea`: the hex is **`0x`-prefixed**, so the recognition module **strips the leading `0x` before `decode(hex, 'hex')`** (see §4.4). **`endpoint_id` is written NULL** in M2: no `seller_endpoints` row is seeded (§8) and `RecognitionConfig` carries no endpointId, so both `interactions.endpoint_id` and `service_deliveries.endpoint_id` (§2.6) are left NULL against their nullable FKs. Wiring endpoint defaults is an explicit M1-seed touch, out of M2 scope (§8).
 
 ### 2.5 `x402_payment_artifacts` (§7.6)
 
@@ -491,7 +502,7 @@ Tie-out (Invariant 3B): seller revenue credit (3000) == gross (3000) ✓; suppli
 
 M2 therefore does the following and is explicit about what it does and does not satisfy:
 - Writes the `interaction` with `status='failed'` (forward-compat `'canceled'`) and the `service_delivery` with `delivery_status='failed'`/`'canceled'` and the `http_status`. **This `service_delivery` row is the §18.11 "failure record"** — the durable, query-able artifact that a failed-delivery occurred, traceable to its `raw_event` (see §6 CSV linkage).
-- Writes **NO** `revenue_event`, `journal_transaction`, `ledger_entries`, or `revenue_collection_state` (`recognizeOne` returns `{ skipped: 'F1' }`).
+- Writes **NO** `revenue_event`, `journal_transaction`, `ledger_entries`, or `revenue_collection_state` (`recognizeOne` returns `{ outcome: 'F1_skipped', interactionId }` — the shipped `RecognitionResult` uses an `outcome` enum `'recognized' | 'replayed' | 'F1_skipped'`, not a `{ skipped }` field).
 - **Defers the active dispute/refund-candidate *workflow* (a `refund_or_dispute_candidate` record + the F2 reversal economics) to F2 (M2-not-list, §9).** M2 satisfies the Milestone-2 acceptance line "failed delivery creates dispute/refund candidate" **only to the extent of the §18.11 failure record** (the `service_delivery`-failed row, distinguishable from a delivered one and reconcilable in the CSV); the dedicated dispute/refund-candidate object and its downstream reversal are an explicit F2 deferral, **not** claimed as fully met by a silent drop.
 
 ### 3.5 Dust handling (§18.14)
@@ -585,7 +596,11 @@ export function allocateSplit(
 /** Pure: build leg specs for a treatment. R1′ wired; agent_net used only in tests. */
 export function buildPostingLegs(ctx: PostingContext): LegSpec[];
 
-/** Resolve (or create) the canonical ledger account for a selector. Idempotent via natural-key index.
+/** Resolve (or create) the canonical ledger account for a selector. Idempotent via the natural-key
+ *  EXPRESSION index (§2.3): insert with `on conflict (tenant_id, account_type, owner_type,
+ *  coalesce(owner_id,'000…000'::uuid), asset) do nothing` — restating the exact index expression —
+ *  then `select` the id, because `do nothing` returns no row on a hit. Seller-owned legs bind
+ *  owner_id as the sentinel so they collapse onto one account.
  *  Live R1′ path only ever passes owner_type in {seller, supplier}; never 'platform'. */
 export function resolveLedgerAccount(
   db: Db, tenantId: string, sel: AccountSelector, asset: string,
@@ -596,7 +611,7 @@ export function resolveLedgerAccount(
  * - verified && delivered  → interaction + artifact + service_delivery + revenue_event(earned)
  *                            + journal_transaction(recognition) + ledger_entries + collection_state(open_receivable)
  * - failed/canceled OR not verified → F1: interaction(status=failed) + service_delivery(failure record) only;
- *                                     NO journal/revenue/collection_state (returns {skipped:'F1'})
+ *                                     NO journal/revenue/collection_state (returns {outcome:'F1_skipped'})
  * Idempotent: ON CONFLICT on (tenant_id, posting_key) and (tenant_id, interaction_id, revenue_source).
  * Asserts gross == resolved pricing_models.fixed_amount_atomic (Invariant 2) and ΣDr==ΣCr per asset
  * (Invariant 1) BEFORE commit (refuses to persist unbalanced — §18.16).
@@ -753,6 +768,7 @@ Add **vitest** (matches TS/ESM/`tsx` stack better than `node:test` for fixtures 
 - the §18.16 audit query returns zero rows after a recognition pass;
 - `parseReceipt` rejects zero/negative/non-integer amounts (bigint path);
 - `hexToBytea` round-trips a `0x`-prefixed hex to the same bytes as the un-prefixed hex (locks the decode fix);
+- **seed idempotency:** applying `0004` twice (the runner re-runs every file) leaves **exactly four** `split_rules` and one `pricing_models` / one `split_groups` row for the demo group — locks the §2.2/§8 deterministic-seed-UUID + natural-key `on conflict` fix (a bare `on conflict do nothing` on `split_rules` would silently duplicate);
 - workspace-resolution smoke test (imports `@ledgerline/recognition` + `@ledgerline/seller-client`).
 
 ---
@@ -761,7 +777,7 @@ Add **vitest** (matches TS/ESM/`tsx` stack better than `node:test` for fixtures 
 
 **New files:**
 - `/Users/broccolirob/Projects/ledgerline/packages/db/src/migrations/0003_revenue_recognition.sql` — all §2 DDL (idempotent `create … if not exists`), including `interactions.raw_event_id text` (no FK) and `raw_events_event_seq_idx`.
-- `/Users/broccolirob/Projects/ledgerline/packages/db/src/migrations/0004_seed_demo_pricing_split.sql` — seed **only** the demo `pricing_models` (exact, fixed 3000) + `split_groups` (principal_gross, v1) + four `split_rules` (publisher 7000 / model_provider 2000 / data_provider 700 / referrer 300 bps), all `ON CONFLICT DO NOTHING`. **Does NOT touch `seller_endpoints`** (no endpoint row is seeded in the repo; endpoint defaults are out of M2 scope — see note below).
+- `/Users/broccolirob/Projects/ledgerline/packages/db/src/migrations/0004_seed_demo_pricing_split.sql` — seed **only** the demo `pricing_models` (exact, fixed 3000) + `split_groups` (principal_gross, v1) + four `split_rules` (publisher 7000 / model_provider 2000 / data_provider 700 / referrer 300 bps). **Per-table `on conflict` targets are mandatory** (the runner re-runs this file on every migrate, §2 preamble): `pricing_models` and `split_groups` conflict on `(tenant_id, name, version)`; `split_rules` uses **deterministic literal UUIDs** + `on conflict (id) do nothing` (it has no natural unique key — a bare `on conflict do nothing` would duplicate the four rows on every re-run and corrupt the split, §2.2). **Does NOT touch `seller_endpoints`** (no endpoint row is seeded in the repo; endpoint defaults are out of M2 scope — see note below).
 - `/Users/broccolirob/Projects/ledgerline/packages/recognition/package.json` — `@ledgerline/recognition`, `exports: './src/index.ts'`, **`pg` as a direct dependency**, `@ledgerline/seller-client` for the type-only `Db` import.
 - `/Users/broccolirob/Projects/ledgerline/packages/recognition/tsconfig.json` — extends base, `include: ['src']`.
 - `/Users/broccolirob/Projects/ledgerline/packages/recognition/src/index.ts` — `parseReceipt`, `hexToBytea`, `allocateSplit`, `buildPostingLegs`, `resolveLedgerAccount`, `recognizeOne`, `runRecognitionPass`, types (incl. `RawEventRow` with `id: string`, `event_seq: string`).

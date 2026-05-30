@@ -1,0 +1,22 @@
+{
+  "name": "@ledgerline/recognition",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "recognize": "tsx --env-file-if-exists=../../.env src/recognize-cli.ts",
+    "export:csv": "tsx --env-file-if-exists=../../.env src/export-csv.ts",
+    "audit": "tsx --env-file-if-exists=../../.env src/audit.ts"
+  },
+  "dependencies": {
+    "@ledgerline/seller-client": "workspace:*",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0"
+  }
+}
