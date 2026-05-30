@@ -99,6 +99,22 @@ describe('recognizeOne — idempotency (interaction-existence gate)', () => {
     expect(after.rows.map((x) => x.id)).toEqual(before.rows.map((x) => x.id));
   });
 
+  it('cross-key collision: a fresh interaction whose paymentSignatureHash already exists fails loudly and rolls back', async () => {
+    // First event recognizes normally.
+    const ev1 = makeRawEvent({ settlementReference: 'xkey-S1' });
+    const sig = (ev1.payload_redacted as { payment: { paymentSignatureHash: string } }).payment.paymentSignatureHash;
+    await recognizeOne(pool, cfg, ev1);
+    // Second event: DIFFERENT settlementReference (passes the interaction gate) but SAME
+    // paymentSignatureHash (collides on the artifact natural key). Must throw, not silently drop.
+    const ev2 = makeRawEvent({ settlementReference: 'xkey-S2' });
+    (ev2.payload_redacted as { payment: { paymentSignatureHash: string } }).payment.paymentSignatureHash = sig;
+    const before = await count('interactions');
+    await expect(recognizeOne(pool, cfg, ev2)).rejects.toThrow(/cross-key collision|already exists/);
+    // full rollback: the second interaction was not persisted
+    expect(await count('interactions', `where payment_identifier='xkey-S2'`)).toBe(0);
+    expect(await count('interactions')).toBe(before);
+  });
+
   it('weak-anchor fallback: no settlementReference/paymentSignatureHash → recognizes on fingerprint, replay holds', async () => {
     const ev = makeRawEvent({ settlementReference: 'degraded-1', omitAnchors: true });
     const fpHex = (ev.payload_redacted as { requestFingerprint: string }).requestFingerprint;

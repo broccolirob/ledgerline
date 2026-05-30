@@ -533,13 +533,24 @@ async function recognizeOnClient(
   cfg: RecognitionConfig,
   rawEvent: RawEventRow,
 ): Promise<RecognitionResult> {
-  // Single-writer safety: the interaction-existence idempotency gate is sound under SEQUENTIAL
-  // replays. Full settlement-state locking (Invariant 10) is deferred with P1/F2, but a per-tenant
-  // xact advisory lock cheaply serializes concurrent recognition passes so the gate cannot race
-  // (TOCTOU): same-tenant passes queue, different tenants never block. Auto-released at COMMIT/ROLLBACK.
+  // Per-tenant advisory lock narrows the gate's TOCTOU window. SCOPE: on the Pool path recognizeOne
+  // runs one txn PER ROW, so this xact-scoped lock serializes the per-row gate check, not a whole
+  // pass — concurrent same-tenant passes still interleave at row boundaries. The interaction unique
+  // constraint is the actual duplicate-recognition backstop; the lock just avoids wasted rollbacks.
+  // Different tenants never block each other. Released at the row's COMMIT/ROLLBACK.
   await client.query('select pg_advisory_xact_lock(hashtext($1))', [cfg.tenantId]);
 
   const r = parseReceipt(rawEvent);
+  // Weak-anchor observability: with neither a Gateway settlementReference nor a paymentSignatureHash,
+  // the idempotency anchor degrades to the request fingerprint, which is identical across two distinct
+  // purchases of the same request — so a genuine second sale would be swallowed as a 'replayed' no-op.
+  // Unreachable in the demo (Gateway always supplies settlementReference); warn so it is observable.
+  if (!r.settlementReference && !r.paymentSignatureHashHex) {
+    console.warn(
+      `[recognition] weak idempotency anchor for raw_event ${r.rawEventId}: no settlementReference or ` +
+        `paymentSignatureHash — deduping on requestFingerprint, which cannot distinguish two identical requests`,
+    );
+  }
   const recognize = r.verified && r.deliveryStatus === 'delivered';
   const interactionStatus = recognize ? 'delivered' : r.deliveryStatus === 'canceled' ? 'canceled' : 'failed';
 
@@ -576,8 +587,13 @@ async function recognizeOnClient(
   const interactionId = freshInteraction.id;
 
   // 2. x402 payment artifact (no-overclaim: 'payment_signature', not signed_receipt).
+  // The artifact dedup key (artifact_hash) differs from the interaction gate key (payment_identifier):
+  // a fresh interaction could still hit an artifact conflict if a PRIOR interaction shared this
+  // paymentSignatureHash under a different settlementReference. That would leave this recognized
+  // revenue with no artifact row, so treat a conflict here as an invariant violation and fail loudly
+  // (mirrors the journal-insert guard below). Atomic: the whole txn rolls back.
   const artifactHashHex = r.paymentSignatureHashHex ?? r.requestFingerprintHex;
-  await client.query(
+  const insArtifact = await client.query(
     `insert into x402_payment_artifacts
        (id, tenant_id, interaction_id, artifact_type, artifact_hash, network, asset, amount_atomic,
         pay_to_address, payment_identifier, settlement_reference, issued_at)
@@ -597,6 +613,13 @@ async function recognizeOnClient(
       r.occurredAt,
     ],
   );
+  if (insArtifact.rowCount === 0) {
+    throw new Error(
+      `recognizeOne: fresh interaction ${interactionId} but payment artifact_hash ${artifactHashHex} ` +
+        `already exists under another interaction — cross-key collision (paymentSignatureHash reused ` +
+        `across distinct settlementReferences)`,
+    );
+  }
 
   // 3. service_delivery — this row IS the §18.11 failure record on the F1 path.
   await client.query(

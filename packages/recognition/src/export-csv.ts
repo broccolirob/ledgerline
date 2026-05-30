@@ -43,17 +43,25 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
     // revenue_events.csv — join-traceable back to receipt/delivery (acceptance line).
+    // service_deliveries has no unique key on interaction_id; recognition writes exactly one today,
+    // but DISTINCT ON (re.id) guards this finance export from double-counting a revenue_event if an
+    // interaction ever gains a second delivery row (picks the earliest delivery deterministically).
+    // Wrapped so the CSV keeps created_at ordering while DISTINCT ON requires re.id-led ordering.
     const revenue = await pool.query(
-      `select re.id as revenue_event_id, re.tenant_id, re.interaction_id, i.raw_event_id,
-              re.revenue_source, re.pricing_model_id, re.gross_amount_atomic, re.asset, re.network,
-              re.revenue_status, re.earned_at, sd.id as service_delivery_id, sd.delivery_status,
-              sd.http_status, cs.status as collection_status, re.created_at
-         from revenue_events re
-         join interactions i on i.id = re.interaction_id
-         left join service_deliveries sd on sd.interaction_id = i.id
-         left join revenue_collection_state cs on cs.revenue_event_id = re.id
-        where re.tenant_id = $1
-        order by re.created_at, re.id`,
+      `select * from (
+         select distinct on (re.id)
+                re.id as revenue_event_id, re.tenant_id, re.interaction_id, i.raw_event_id,
+                re.revenue_source, re.pricing_model_id, re.gross_amount_atomic, re.asset, re.network,
+                re.revenue_status, re.earned_at, sd.id as service_delivery_id, sd.delivery_status,
+                sd.http_status, cs.status as collection_status, re.created_at
+           from revenue_events re
+           join interactions i on i.id = re.interaction_id
+           left join service_deliveries sd on sd.interaction_id = i.id
+           left join revenue_collection_state cs on cs.revenue_event_id = re.id
+          where re.tenant_id = $1
+          order by re.id, sd.created_at nulls last
+       ) t
+       order by created_at, revenue_event_id`,
       [tenantId],
     );
 
