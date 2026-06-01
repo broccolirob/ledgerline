@@ -12,6 +12,8 @@ export default defineConfig({
     alias: {
       '@ledgerline/recognition': resolve(root, 'packages/recognition/src/index.ts'),
       '@ledgerline/seller-client': resolve(root, 'packages/seller-client/src/index.ts'),
+      '@ledgerline/canonical': resolve(root, 'packages/canonical/src/index.ts'),
+      '@ledgerline/anchor': resolve(root, 'packages/anchor/src/index.ts'),
     },
   },
   test: {

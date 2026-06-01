@@ -1,0 +1,26 @@
+{
+  "name": "@ledgerline/anchor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build-batch": "tsx --env-file-if-exists=../../.env src/anchor-build-cli.ts",
+    "submit": "tsx --env-file-if-exists=../../.env src/anchor-submit-cli.ts",
+    "verify": "tsx --env-file-if-exists=../../.env src/verify-cli.ts",
+    "vectors:check": "tsx src/vectors-check-cli.ts"
+  },
+  "dependencies": {
+    "@ledgerline/canonical": "workspace:*",
+    "pg": "^8.21.0",
+    "viem": "^2.51.0"
+  },
+  "devDependencies": {
+    "@ledgerline/recognition": "workspace:*",
+    "@ledgerline/seller-client": "workspace:*",
+    "@types/pg": "^8.20.0"
+  }
+}

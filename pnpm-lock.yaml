@@ -98,6 +98,34 @@ importers:
         specifier: ^5.0.6
         version: 5.0.6
 
+  packages/anchor:
+    dependencies:
+      '@ledgerline/canonical':
+        specifier: workspace:*
+        version: link:../canonical
+      pg:
+        specifier: ^8.21.0
+        version: 8.21.0
+      viem:
+        specifier: ^2.51.0
+        version: 2.51.3(typescript@5.9.3)(zod@3.25.76)
+    devDependencies:
+      '@ledgerline/recognition':
+        specifier: workspace:*
+        version: link:../recognition
+      '@ledgerline/seller-client':
+        specifier: workspace:*
+        version: link:../seller-client
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+
+  packages/canonical:
+    dependencies:
+      '@noble/hashes':
+        specifier: ^1.7.0
+        version: 1.8.0
+
   packages/db:
     dependencies:
       pg:

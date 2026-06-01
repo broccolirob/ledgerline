@@ -70,3 +70,85 @@ M0 gate — all items met:
 spike-proven achievable) is the next receipt milestone, not a demo blocker. Next build is the
 founder's call: **M2** (revenue recognition — `raw_events` → `revenue_events` + double-entry ledger)
 or the **Path B** receipt route.
+
+## D-0005 — Canonicalization: LCJ v1 in-house, no deps (decided 2026-05-31, M4)
+
+- **LCJ v1 is an RFC-8785-*based* restricted profile, NOT full RFC 8785.** LCJ forbids bare numbers /
+  floats / null (§17 Rules 2/3/5), which removes RFC 8785's only hard part (IEEE-754 double
+  canonicalization). What remains — sorted-key emission over closed schemas + Ledgerline
+  closed-schema / duplicate-key / numeric-string validation that no JCS lib does — is implemented
+  in-house in `@ledgerline/canonical` (zero serialization deps), keeping the verifier independently
+  auditable.
+- **Hash primitive is vetted, not hand-rolled:** keccak256 via `@noble/hashes` `keccak_256` (the EVM
+  keccak — cross-checked byte-for-byte against viem's `keccak256` in the anchor tests). In-house the
+  serialization; never the crypto.
+- **No-overclaim:** say "LCJ v1, RFC-8785-based," never "full RFC 8785 compliance."
+- Frozen §17.5 vectors ship at `packages/canonical/vectors/lcj-vectors.json`; `pnpm vectors:check`
+  (and a vitest) fail on any byte drift, since drift would invalidate every committed Arc root.
+
+## D-0006 — M4 canonicalizer scoped to new Merkle leaves only (decided 2026-05-31)
+
+- The committed leaves are `revenue_event_leaf.v1` + `ledger_entry_leaf.v1`, re-canonicalized fresh at
+  batch time under LCJ+keccak. The M1 `raw_events.canonical_hash` placeholder (`seller-client`'s
+  sha256 + `stableStringify`) is **left untouched** — it is a capture-time dedup field, never an
+  on-chain leaf. The seller-client retrofit is a separate future task (not in M4).
+
+## D-0007 — Arc anchoring is Track-A-gated; credential-free core (decided 2026-05-31)
+
+- Canonicalization + Merkle + `buildBatch` + the verifier (offline) + `pnpm contracts:test` all run
+  with **zero credentials**. `pnpm anchor:submit` and `pnpm verify --onchain` are gated on
+  `ARC_RPC_URL` + `ANCHOR_COMMITTER_KEY` + `ANCHOR_CONTRACT_ADDRESS`; without them, `anchor:submit`
+  prints "blocked on Track A" and exits 0 (mirrors `demo-buyer`). When creds land, the live anchor
+  lights up with no code change.
+- **Correction to the planning framing:** Foundry IS installed locally (`forge 1.6.0`), so contract
+  tests run today; only the live deploy/submit + on-chain read are credential-gated.
+- `RevenueBatchAnchor.sol` uses a **minimal inline role gate** (COMMITTER_ROLE + admin) instead of an
+  OpenZeppelin `AccessControl` import — zero external deps, hermetic `forge test`. Single-commit is
+  guarded by `batchExists[batchId]` (not `committedAt != 0`) so a 0-timestamp/genesis edge can't make
+  a batch re-committable. `contracts/lib/` (forge-std) is gitignored (`forge install` on fresh clone);
+  `forge test` is scoped via `--match-contract RevenueBatchAnchorTest` (`pnpm contracts:test`) because
+  forge-std ships its own suite under `lib/`.
+
+## D-0008 — Demo batch is a `mixed` batch (decided 2026-05-31)
+
+- One commitment batch contains the `revenue_event` leaf + all `ledger_entries` legs of its
+  recognition journal. This satisfies §21 step 9 ("prove one revenue event is in the root") **and**
+  Invariant 11 (a journal's full leg set co-located so the step-9 balance check is provable). Leaf
+  order: revenue_event leaves (by id), then ledger_entry leaves (by effective_at_ms, journal id, id).
+- **Schema superset (flagged):** `0005_commitment_batches.sql` adds `batch_id`, `status`, `batchExists`
+  bookkeeping, and a `batch_leaves` join table beyond the §7.12 sketch — additive, no rewrite. Plus a
+  salted `tenants.tenant_commitment_salt` (§16; deterministic demo seed — production uses a per-tenant
+  secret).
+- **Verified live (credential-free):** `anchor:build` committed an 18-leaf mixed batch (2
+  revenue_events + 16 ledger legs); `pnpm verify` passes all 14 §17.6 steps offline (canonical
+  reproduction of 18 leaves, principal_gross tie-out, Invariant-11 leg co-location, first-batch
+  zero previous-root, offline inclusion proof). Submit + on-chain finality are the Track-A steps.
+
+## D-0009 — M4 adversarial-review hardening (decided 2026-05-31)
+
+A 6-dimension multi-agent review of the M4 build (20 confirmed/partial of 27 findings) drove these
+fixes (all green: canonical+anchor vitest, 13 forge tests, e2e verify):
+- **Canonicalization:** `parseCanonicalJson` now rejects malformed `\u` escapes (was silently
+  coercing `\uZZZZ`→NUL, weakening the verifier's defensive ingest); atomic-amount leaf fields are
+  uint256-range-checked (`atomicStr`), so a non-representable amount can't enter the frozen root.
+- **Batch builder:** the whole select→leg-read→root-compute→insert sequence now runs inside one
+  transaction behind a per-tenant `pg_advisory_xact_lock` (was read-compute-write across the Pool —
+  concurrent builds could anchor a stale/partial set). Added a pre-anchor per-asset balance gate so an
+  unbalanced/torn journal is never committed as final.
+- **Contract:** `commitBatch` now binds `batchId` to its canonical derivation
+  (`keccak(domain‖tc‖uint64_be(num)‖root)`) and enforces a monotonic per-tenant `batchNumber`
+  (`latestBatchNumberByTenant + 1`); added `revokeRole` (compromised-committer removal); exposed the
+  per-batch `batches(batchId)` getter. Single-commit guard is `batchExists` (D-0007).
+- **Verifier:** step 0 also re-derives + binds `batch_id`; step 12 no longer treats a missing
+  predecessor as genesis (only `batch_number == 1` may chain from the zero root — closes a
+  forged-non-genesis false-accept); step 13 `--onchain` reads the SPECIFIC batch root via
+  `batches(batchId)` instead of `latestRootByTenant` (closes a false-REJECT of every non-latest batch
+  once a tenant has >1 batch); `submitNextBatch`/`commitBatchOnchain` now assert `receipt.status ===
+  'success'` (a mined-but-reverted commit no longer records as 'committed'); `generateVerifierPackage`
+  builds leaves densely with a contiguity assert (was an opaque sparse-array crash).
+- **Deferred (documented, not reached by shipped code):** symmetric leg-aware idempotency filter in
+  `buildBatch` (current filter keys only the revenue_event leaf — only bites a manual partial-commit);
+  re-deriving the canonical leaf ORDER in the verifier (ordering is builder-trusted today — a builder
+  sort regression would self-verify; the frozen leaf-hash vectors do not pin batch order); on-chain
+  `eventCount` is advisory (the root commits to leaf hashes, not their count — the off-chain verifier
+  binds count==leaves at step 0).

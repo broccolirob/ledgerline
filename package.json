@@ -18,6 +18,11 @@
     "recognize": "pnpm --filter @ledgerline/recognition recognize",
     "export:csv": "pnpm --filter @ledgerline/recognition export:csv",
     "audit:balance": "pnpm --filter @ledgerline/recognition run audit",
+    "anchor:build": "pnpm --filter @ledgerline/anchor run build-batch",
+    "anchor:submit": "pnpm --filter @ledgerline/anchor run submit",
+    "verify": "pnpm --filter @ledgerline/anchor run verify",
+    "vectors:check": "pnpm --filter @ledgerline/anchor run vectors:check",
+    "contracts:test": "cd contracts && forge test --match-contract RevenueBatchAnchorTest",
     "test": "vitest run",
     "test:watch": "vitest"
   },

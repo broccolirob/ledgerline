@@ -1,0 +1,131 @@
+{
+  "_note": "M4 §17.5 golden vectors — frozen. Regenerate ONLY with an intentional format bump.",
+  "records": {
+    "simple_revenue_event": {
+      "input": {
+        "schema_version": "revenue_event_leaf.v1",
+        "id": "cd8900aa-9a6f-4069-86de-672e3169f42e",
+        "tenant_commitment": "0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef",
+        "interaction_id": "51207459-52eb-4753-ab6f-c014bf39b67b",
+        "revenue_source": "x402_purchase",
+        "gross_amount_atomic": "3000",
+        "asset": "USDC",
+        "revenue_status": "earned",
+        "earned_at_ms": "1780017327611",
+        "network": "eip155:5042002"
+      },
+      "lcj": "{\"asset\":\"USDC\",\"earned_at_ms\":\"1780017327611\",\"gross_amount_atomic\":\"3000\",\"id\":\"cd8900aa-9a6f-4069-86de-672e3169f42e\",\"interaction_id\":\"51207459-52eb-4753-ab6f-c014bf39b67b\",\"network\":\"eip155:5042002\",\"revenue_source\":\"x402_purchase\",\"revenue_status\":\"earned\",\"schema_version\":\"revenue_event_leaf.v1\",\"tenant_commitment\":\"0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef\"}",
+      "canonical_record_hash": "0x37cd95f15f426dd1ad1b0731c33b94105563171bc2c8c1b6220762078ca26dae",
+      "leaf_hash": "0x27353fabb5b163a8a915c5c8bd0841ffe99d02a7baefd1af884108f130073d24"
+    },
+    "optional_network_omitted": {
+      "input": {
+        "schema_version": "revenue_event_leaf.v1",
+        "id": "re-2",
+        "tenant_commitment": "0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef",
+        "interaction_id": "ix-2",
+        "revenue_source": "x402_purchase",
+        "gross_amount_atomic": "3000",
+        "asset": "USDC",
+        "revenue_status": "earned",
+        "earned_at_ms": "1780017327611"
+      },
+      "lcj": "{\"asset\":\"USDC\",\"earned_at_ms\":\"1780017327611\",\"gross_amount_atomic\":\"3000\",\"id\":\"re-2\",\"interaction_id\":\"ix-2\",\"revenue_source\":\"x402_purchase\",\"revenue_status\":\"earned\",\"schema_version\":\"revenue_event_leaf.v1\",\"tenant_commitment\":\"0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef\"}",
+      "canonical_record_hash": "0x458f80e97bf0d628e533cd090d1f713eb64f6d448ca17080b1aef18eba2b3ad1",
+      "leaf_hash": "0xd9e087235d5932def195a659e2b98db800225e4f1a0cfaf3ef20473d69a5a866"
+    },
+    "principal_gross_revenue_leg": {
+      "input": {
+        "schema_version": "ledger_entry_leaf.v1",
+        "id": "le-rev",
+        "tenant_commitment": "0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef",
+        "journal_transaction_id": "jt-1",
+        "txn_type": "recognition",
+        "revenue_treatment": "principal_gross",
+        "account_type": "revenue",
+        "owner_type": "seller",
+        "direction": "credit",
+        "amount_atomic": "3000",
+        "asset": "USDC",
+        "effective_at_ms": "1780017327611"
+      },
+      "lcj": "{\"account_type\":\"revenue\",\"amount_atomic\":\"3000\",\"asset\":\"USDC\",\"direction\":\"credit\",\"effective_at_ms\":\"1780017327611\",\"id\":\"le-rev\",\"journal_transaction_id\":\"jt-1\",\"owner_type\":\"seller\",\"revenue_treatment\":\"principal_gross\",\"schema_version\":\"ledger_entry_leaf.v1\",\"tenant_commitment\":\"0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef\",\"txn_type\":\"recognition\"}",
+      "canonical_record_hash": "0x6a584387f778515693ebec594f338d2ee77bdae2f30b23b9ac5ad6755ee9dc41",
+      "leaf_hash": "0x4e21a955fca259449d4282121daaa97527b7b9a3d0371b8d0ebe6d497efd9d3a"
+    },
+    "agent_net_payable_leg": {
+      "input": {
+        "schema_version": "ledger_entry_leaf.v1",
+        "id": "le-pay",
+        "tenant_commitment": "0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef",
+        "journal_transaction_id": "jt-2",
+        "txn_type": "recognition",
+        "revenue_treatment": "agent_net",
+        "account_type": "payable",
+        "owner_type": "supplier",
+        "direction": "credit",
+        "amount_atomic": "600",
+        "asset": "USDC",
+        "effective_at_ms": "1780017327611",
+        "owner_id": "00000000-0000-4000-8000-0000000000c2"
+      },
+      "lcj": "{\"account_type\":\"payable\",\"amount_atomic\":\"600\",\"asset\":\"USDC\",\"direction\":\"credit\",\"effective_at_ms\":\"1780017327611\",\"id\":\"le-pay\",\"journal_transaction_id\":\"jt-2\",\"owner_id\":\"00000000-0000-4000-8000-0000000000c2\",\"owner_type\":\"supplier\",\"revenue_treatment\":\"agent_net\",\"schema_version\":\"ledger_entry_leaf.v1\",\"tenant_commitment\":\"0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef\",\"txn_type\":\"recognition\"}",
+      "canonical_record_hash": "0xe31d8534eac617e836e0488088bfd2f5ad61f1a92fcf31d5e6964e0475238078",
+      "leaf_hash": "0x0278a6edbe5d493d95f4e79bb1cf91301412d4aa7d4e238c757ccc726b47b6ad"
+    },
+    "unicode_preserved": {
+      "input": {
+        "schema_version": "note.v1",
+        "s": "管理 é é"
+      },
+      "lcj": "{\"s\":\"管理 é é\",\"schema_version\":\"note.v1\"}",
+      "canonical_record_hash": "0xc3a693909df29c10a1091e98a48db172610ea8c4908cbdb90881438330366d01",
+      "leaf_hash": "0x4c1b10b16196820389768f33316ca8f87b96cfd90bd0b4d2411e9afb462b0127"
+    },
+    "boolean_field": {
+      "input": {
+        "schema_version": "note.v1",
+        "flag": true
+      },
+      "lcj": "{\"flag\":true,\"schema_version\":\"note.v1\"}",
+      "canonical_record_hash": "0x227d59e29f258933835593cfd1d3a2e8914a04309b9104dcf4a85d60a3319567",
+      "leaf_hash": "0xfa249725db15a5bb944d0cd432da9b9edaac9aa374a39265cd8818a3547bce41"
+    },
+    "max_atomic": {
+      "input": {
+        "schema_version": "ledger_entry_leaf.v1",
+        "id": "le-max",
+        "tenant_commitment": "0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef",
+        "journal_transaction_id": "jt-3",
+        "txn_type": "recognition",
+        "revenue_treatment": "principal_gross",
+        "account_type": "revenue",
+        "owner_type": "seller",
+        "direction": "credit",
+        "amount_atomic": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "asset": "USDC",
+        "effective_at_ms": "1780017327611"
+      },
+      "lcj": "{\"account_type\":\"revenue\",\"amount_atomic\":\"115792089237316195423570985008687907853269984665640564039457584007913129639935\",\"asset\":\"USDC\",\"direction\":\"credit\",\"effective_at_ms\":\"1780017327611\",\"id\":\"le-max\",\"journal_transaction_id\":\"jt-3\",\"owner_type\":\"seller\",\"revenue_treatment\":\"principal_gross\",\"schema_version\":\"ledger_entry_leaf.v1\",\"tenant_commitment\":\"0x35d827eeb4e2c90f6747752b9725153ee5c6b8815805786284f2a55a367989ef\",\"txn_type\":\"recognition\"}",
+      "canonical_record_hash": "0x9977fa8bd454644f6886ef7e91a493f6070a6dcb0182e61665ed5c4b0105f6b1",
+      "leaf_hash": "0xcfe42b8f2ce892dfd4f90ec4ab5c15d6044b1cbf8254272d8705d520d6822c7a"
+    }
+  },
+  "merkle": {
+    "three_leaf_root": "0x4ae0c3d4e9dbb9ac240c86aa9678d669a87243962ebb37aca6340ea1f37797a0",
+    "three_leaf_proof_index1_siblings": [
+      {
+        "hash": "0x27353fabb5b163a8a915c5c8bd0841ffe99d02a7baefd1af884108f130073d24",
+        "side": "left"
+      },
+      {
+        "hash": "0x0278a6edbe5d493d95f4e79bb1cf91301412d4aa7d4e238c757ccc726b47b6ad",
+        "side": "right"
+      }
+    ]
+  },
+  "chain": {
+    "first_previous_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "batch1_id": "0x7f040043b573b035b37370e379aba7dd5cb68982a1f3f91d8c831322ef9569f3"
+  }
+}

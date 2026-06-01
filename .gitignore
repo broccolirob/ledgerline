@@ -25,7 +25,19 @@ coverage/
 .idea/
 .vscode/
 
-# Foundry (M4)
+# Foundry (M4 contracts). contracts/lib/ holds vendored deps —
+# run: cd contracts && forge install foundry-rs/forge-std
+contracts/lib/
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+# stray Foundry artifacts if forge is ever run from the repo root
+/out/
+/cache/
+
+# CSV / verifier-package exports
+packages/recognition/exports/
+packages/anchor/exports/
+
+# Claude Code session / workflow transcripts (not source)
+.claude/
