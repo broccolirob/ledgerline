@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   try {
     if (!revenueEventId) {
       // default: the most recently committed revenue_event for the demo tenant
-      const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+      const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
       const r = await pool.query<{ record_id: string }>(
         `select bl.record_id from batch_leaves bl
           where bl.tenant_id = $1 and bl.record_type = 'revenue_event'

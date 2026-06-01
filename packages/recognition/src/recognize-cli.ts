@@ -9,7 +9,7 @@ const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerlin
 async function main(): Promise<void> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
-    const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+    const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
     const cfg = await resolveDemoConfig(pool, tenantId);
     const summary = await runRecognitionPass(pool, cfg);
     console.log('[recognize] summary:', JSON.stringify(summary, null, 2));

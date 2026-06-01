@@ -8,7 +8,7 @@ const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerlin
 async function main(): Promise<void> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
-    const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+    const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
     const r = await buildBatch(pool, tenantId);
     console.log('[anchor:build]', JSON.stringify(r, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
   } finally {

@@ -152,3 +152,29 @@ fixes (all green: canonical+anchor vitest, 13 forge tests, e2e verify):
   sort regression would self-verify; the frozen leaf-hash vectors do not pin batch order); on-chain
   `eventCount` is advisory (the root commits to leaf hashes, not their count — the off-chain verifier
   binds count==leaves at step 0).
+
+## D-0010 — Anchor live on Arc Testnet (decided 2026-06-01, M4)
+
+The M4 commitment layer is no longer Track-A-gated in principle — it is **live on Arc Testnet**:
+- `RevenueBatchAnchor` deployed at **`0x3Bd5966789CA3F00ecB25D262099c9DDE0e90EC4`** (chain id 5042002),
+  deploy tx `0x7918414793556c35500bf78eebe033ad6c31f48ec21aaddd720b75d0abf48010`. The deployer EOA
+  `0x74F8ACbb186187419eA254dc27919Cb35FB92077` is admin + `COMMITTER_ROLE` (the `anchor:submit` signer);
+  it pays gas in USDC directly from its balance (USDC is Arc's native gas — NOT the M0 Gateway deposit
+  flow). Fresh dedicated testnet-only committer EOA, distinct from the M0 payment-rail wallets.
+- Batch #1 (18 leaves, root `0x2701389ec4c16ac971540e4ad99bb7b6bf7a8ce49070b2c81795c025762e672b`)
+  committed on-chain via `commitBatch` tx
+  **`0x7ee7c6a74bb491eab3da395813661925976316613c959aceb7cad5170d06233a`**.
+- `pnpm verify --onchain` → **PASS (anchor-verified)**, all 14 §17.6 steps, including step 13
+  (on-chain batch root read via `batches(batchId)` matches) and step 14 (tx final). Offline `pnpm
+  verify` still passes with the honest "DB-consistent; run --onchain" qualifier.
+- Demo §21 steps 8 (commit to Arc) + 9-onchain (verifier proves inclusion in the Arc-committed root)
+  are now demonstrable end-to-end with a real block-explorer tx hash.
+
+**Bug found by going live (fixed):** all 5 CLIs resolved the tenant via
+`process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID`, which only falls back on `undefined`. A
+set-but-empty `LEDGERLINE_TENANT_ID=` in `.env` passed `''` through → `invalid input syntax for type
+uuid: ""`. Fixed to `(process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID` across
+anchor-build/submit/verify CLIs + recognition recognize/export CLIs.
+
+Secrets (`ANCHOR_COMMITTER_KEY`, RPC) live only in the gitignored `.env`; the contract address + tx
+hashes above are public testnet identifiers, safe to record.

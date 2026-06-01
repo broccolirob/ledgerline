@@ -17,12 +17,14 @@ Nanopayments, demoed on Arc Testnet. This file orients an AI session working in 
 - **Milestone 2: complete.** `@ledgerline/recognition` turns delivered+verified paid `raw_events` into
   `earned` `revenue_events` + balanced double-entry `journal_transactions`/`ledger_entries`
   (principal_gross R1′; 3000→2100/600/210/90). Migrations 0003/0004; CSV export + balance audit. Plan: `docs/M2_PLAN.md`.
-- **Milestone 4: complete (credential-free core; live anchor Track-A-gated).** `@ledgerline/canonical`
+- **Milestone 4: complete and LIVE on Arc Testnet.** `@ledgerline/canonical`
   (LCJ v1 + keccak256 + RFC-9162 Merkle + §17.5 vectors), `@ledgerline/anchor` (batch builder enforcing
   Invariant 11; the 14-step Path-C verifier + verifier-package generator), migration 0005
   (`commitment_batches` + `batch_leaves` + salted `tenant_commitment`), and
-  `contracts/RevenueBatchAnchor.sol` (Foundry). `pnpm anchor:build` + `pnpm verify` pass offline on real
-  data; live deploy/submit + `verify --onchain` gated on Track-A creds (D-0007). Plan: `docs/M4_PLAN.md`.
+  `contracts/RevenueBatchAnchor.sol` (Foundry). `RevenueBatchAnchor` deployed at
+  `0x3Bd5966789CA3F00ecB25D262099c9DDE0e90EC4` (chain 5042002); batch #1 committed via tx
+  `0x7ee7c6a7…06233a`; `pnpm verify --onchain` → PASS all 14 steps (D-0010). Offline `pnpm verify` still
+  passes with an honest "run --onchain" qualifier. Plan: `docs/M4_PLAN.md`.
 - **Receipt path (D-0001):** the demo ships on **Path C** (the analog). Official x402 Signed Receipts
   (**Path B**) are spike-proven achievable (`apps/spike-receipt/`) and are the next receipt milestone.
 - **Next candidates:** Track-A live Arc deploy of the anchor; the Path-B official receipt; or M5

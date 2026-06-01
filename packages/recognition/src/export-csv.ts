@@ -38,7 +38,7 @@ const LEDGER_COLUMNS = [
 ];
 
 async function main(): Promise<void> {
-  const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+  const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
   const outDir = resolve(process.env.EXPORT_DIR ?? 'exports');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
