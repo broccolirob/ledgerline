@@ -11,7 +11,8 @@
     "build-batch": "tsx --env-file-if-exists=../../.env src/anchor-build-cli.ts",
     "submit": "tsx --env-file-if-exists=../../.env src/anchor-submit-cli.ts",
     "verify": "tsx --env-file-if-exists=../../.env src/verify-cli.ts",
-    "vectors:check": "tsx src/vectors-check-cli.ts"
+    "vectors:check": "tsx src/vectors-check-cli.ts",
+    "demo": "tsx --env-file-if-exists=../../.env src/demo-cli.ts"
   },
   "dependencies": {
     "@ledgerline/canonical": "workspace:*",

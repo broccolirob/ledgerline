@@ -11,7 +11,7 @@ Nanopayments, demoed on Arc Testnet. This file orients an AI session working in 
   **Never copy confidential docs into this public repo.** This repo consumes the published
   `@ledgerline/*` packages; it never depends on `ledgerline-cloud`.
 
-## Status (2026-05-31)
+## Status (2026-06-01)
 - **Milestone 0: complete.** Live on Arc Testnet: unpaid→402, paid→200, sub-cent `$0.003`, and each
   paid call captured as a "Ledgerline receipt analog" (`raw_events` row). See `DECISION_LOG.md` + `SPIKE.md`.
 - **Milestone 2: complete.** `@ledgerline/recognition` turns delivered+verified paid `raw_events` into
@@ -25,10 +25,15 @@ Nanopayments, demoed on Arc Testnet. This file orients an AI session working in 
   `0x3Bd5966789CA3F00ecB25D262099c9DDE0e90EC4` (chain 5042002); batch #1 committed via tx
   `0x7ee7c6a7…06233a`; `pnpm verify --onchain` → PASS all 14 steps (D-0010). Offline `pnpm verify` still
   passes with an honest "run --onchain" qualifier. Plan: `docs/M4_PLAN.md`.
+- **Milestone 5: complete (grant-ready).** `pnpm demo` runs the §21 nine-step sequence end to end
+  (narrated, idempotent, capability-banner); `docs/THREAT_MODEL.md` maps T1–T16 to honest status; a
+  security suite (`pnpm test:security`, 38 tests) covers T1/T8/T9/T11/T16 + a T6 negative test;
+  `README` + `docs/INTEGRATION.md` + `docs/DEMO.md` round it out. LEAN scope — no hosted API / API-key
+  / adapter-sig verification (M6+). Plan: `docs/M5_PLAN.md` (D-0011).
 - **Receipt path (D-0001):** the demo ships on **Path C** (the analog). Official x402 Signed Receipts
   (**Path B**) are spike-proven achievable (`apps/spike-receipt/`) and are the next receipt milestone.
-- **Next candidates:** Track-A live Arc deploy of the anchor; the Path-B official receipt; or M5
-  (pilot hardening + the §21 demo script).
+- **Next candidates (M6+):** adapter-event signing + server-side verification (the T6 gap); hosted
+  ingestion API + API-key management; the §9 encryption envelope; Path-B official receipts.
 
 ## M4 anchor/canonical conventions (load-bearing)
 - **keccak256 (EVM), not sha256/NIST-sha3** for all M4 committed hashes; `@noble/hashes` `keccak_256`.

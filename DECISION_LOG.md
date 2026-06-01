@@ -178,3 +178,33 @@ anchor-build/submit/verify CLIs + recognition recognize/export CLIs.
 
 Secrets (`ANCHOR_COMMITTER_KEY`, RPC) live only in the gitignored `.env`; the contract address + tx
 hashes above are public testnet identifiers, safe to record.
+
+## D-0011 — Milestone 5 complete: grant-ready (decided 2026-06-01)
+
+Phase 5 shipped as **presentation + hardening of what exists** — explicitly LEAN, no new infra:
+- **`pnpm demo`** (`packages/anchor/src/demo-cli.ts`) — the runnable §21 nine-step sequence
+  (capture-or-replay → recognize → split → recipient view → CSV export → build → submit → verify),
+  narrated + idempotent, with a capability banner (LIVE-PAY vs CAPTURED-START; ON-CHAIN vs OFFLINE).
+  Verified end-to-end: PASS (anchor-verified), all 14 steps, against the live D-0010 contract.
+- **`docs/THREAT_MODEL.md`** — T1–T16 mapped to ENFORCED/TESTED/PARTIAL/DEFERRED, each row citing real
+  code or a test. TESTED: T1,T2,T3,T7,T8,T9,T11,T16. PARTIAL: T4 (Path C),T5,T10,T12. DEFERRED:
+  T6,T13,T14,T15. T6 (adapter-event auth) is the named headline M6 gap, backed by a NEGATIVE test.
+- **Security suite** (`*.security.test.ts`, 38 tests, `pnpm test:security`) — cross-tenant isolation
+  (T11), split overflow/dust + value conservation (T8), raw-metadata-not-in-leaf (T9), fingerprint
+  binding (T1), parse-boundary fuzz (T16), and the T6 adapter-sig negative test proving the gap is real.
+- **Docs** — root `README.md` rewritten (live-on-Arc status + tx hash + `pnpm demo` quickstart + honest
+  deferred list); `docs/INTEGRATION.md` (seller path, <1-day onboarding); `docs/DEMO.md` (presenter
+  narration). Plan: `docs/M5_PLAN.md`.
+
+**LEAN boundary (deferred to M6+, named so the threat model stays honest):** hosted ingestion API
+(`POST /v1/events`), API-key management, adapter-event signing + server-side verification (T6), the §9
+encryption envelope (T5 full), dashboard UI (CSV substitute stands), JSON export. SIWX (T13), Gateway
+reconciliation (T14), and P1/F2 cash flows + Invariant 10 (T15) gate on post-demo milestones.
+
+**Bug fixed during M5 (found by `pnpm demo`):** all 5 CLIs resolved the tenant via
+`process.env.X ?? DEMO_TENANT_ID`, which only falls back on `undefined`; a set-but-empty
+`LEDGERLINE_TENANT_ID=` passed `''` → empty-uuid bind error. (Already recorded under D-0010's CLI fix;
+the demo re-exercised and confirmed it.)
+
+Verified: typecheck 9/9, vitest 156/156 (118 + 38 security), forge 13/13, vectors OK, `pnpm demo`
+PASS anchor-verified.

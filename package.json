@@ -23,8 +23,10 @@
     "verify": "pnpm --filter @ledgerline/anchor run verify",
     "vectors:check": "pnpm --filter @ledgerline/anchor run vectors:check",
     "contracts:test": "cd contracts && forge test --match-contract RevenueBatchAnchorTest",
+    "demo": "pnpm --filter @ledgerline/anchor run demo",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:security": "vitest run .security.test"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

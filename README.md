@@ -1,48 +1,91 @@
 # Ledgerline
 
-Open-source seller-side toolkit for x402 + Circle Gateway Nanopayments. The goal: turn paid
-agent/API calls into finance-grade revenue — a drop-in adapter, a verifiable
-receipt/commitment pipeline, and an on-chain audit anchor on Arc.
+Open-source seller-side **revenue subledger** for x402 + Circle Gateway Nanopayments, anchored on
+Arc. It turns paid agent/API calls into finance-grade revenue: capture each paid call, recognize it as
+double-entry revenue, split it across the parties behind the response, export finance-ready records,
+and commit a tamper-evident Merkle root to Arc that anyone can independently verify.
 
-> **Status: Milestone 0 complete (pre-alpha).** The demo flow works end to end: a paid x402 call
-> over Circle Gateway Nanopayments on Arc Testnet is captured into Postgres as a **Ledgerline
-> receipt analog** (request fingerprint + redacted payment context + delivery). That analog is
-> **not** an official x402 *signed receipt* — producing the official artifact (Path B) is
-> spike-proven achievable and is the next receipt milestone (see `DECISION_LOG.md` D-0001).
-> Canonicalization is still an M0 placeholder, and the split engine, double-entry ledger,
-> verifier, and Arc anchor are **planned, not yet built**. The hosted reconciliation/dashboard
-> platform is a separate product.
+> **Status: live on Arc Testnet (M0–M5 complete, pre-alpha).** A paid `$0.003` x402 call over Circle
+> Gateway Nanopayments on Arc Testnet is captured, recognized into an `earned` revenue event + a
+> balanced double-entry ledger, split four ways, exported to CSV, and committed as a Merkle batch root
+> **on-chain** (`RevenueBatchAnchor` at `0x3Bd5966789CA3F00ecB25D262099c9DDE0e90EC4`, chain 5042002;
+> batch #1 committed in tx `0x7ee7c6a74bb491eab3da395813661925976316613c959aceb7cad5170d06233a`). An
+> independent verifier proves a revenue event is in that on-chain root — every applicable check
+> passes (steps 2–3 are N/A under Path C: there's no official signed receipt to validate). Run it
+> with **`pnpm demo`**.
+>
+> **No-overclaim:** the demo ships on **Path C** — a *Ledgerline receipt analog* (request fingerprint +
+> redacted payment context + delivery record), **not** an official x402 *signed receipt*. The official
+> artifact (Path B) is spike-proven achievable and is the next receipt milestone (`DECISION_LOG.md`
+> D-0001). See `docs/THREAT_MODEL.md` for an honest T1–T16 status, including what is deferred.
+
+## The pipeline (demo §21, end to end)
+
+```
+x402 paid call ──▶ Ledgerline receipt analog (raw_events)        [M0/M1]
+   └─▶ recognize ──▶ earned revenue_event + balanced journal       [M2]  3000 → 2100/600/210/90, ΣDr=ΣCr
+        └─▶ build  ──▶ canonical leaves → keccak Merkle root        [M4]  LCJ v1 + RFC-9162
+             └─▶ submit ─▶ RevenueBatchAnchor.commitBatch (Arc)     [M4]  previous-root chained
+                  └─▶ verify ─▶ 14-step inclusion proof vs on-chain  [M4]  offline or --onchain
+```
 
 ## What's here
 
 | Path | Package | Role |
 |------|---------|------|
-| `packages/express` | `@ledgerline/express` | Drop-in seller adapter — captures the receipt analog on response finish (M1) |
-| `packages/seller-client` | `@ledgerline/seller-client` | Raw-event write path + split helper |
-| `packages/db` | `@ledgerline/db` | Local event-store schema + migration |
-| `apps/demo-seller-express` | — | Example x402 seller behind Circle Gateway Nanopayments |
-| `apps/demo-buyer` | — | Example buyer paying over Arc Testnet |
-| `contracts/` | — | `RevenueBatchAnchor` Arc anchor contract (M4, Foundry, MIT) |
-| `infra/` | — | Local Postgres 16 via Docker Compose |
+| `packages/express` | `@ledgerline/express` | Drop-in seller adapter — captures the receipt analog on response finish |
+| `packages/seller-client` | `@ledgerline/seller-client` | Request fingerprint + raw-event write path + sink |
+| `packages/recognition` | `@ledgerline/recognition` | Recognition pass: `raw_events` → `revenue_events` + double-entry ledger + split |
+| `packages/canonical` | `@ledgerline/canonical` | LCJ v1 canonicalization + keccak256 + RFC-9162 Merkle + frozen §17.5 vectors |
+| `packages/anchor` | `@ledgerline/anchor` | Batch builder, on-chain client, the 14-step verifier, the `pnpm demo` script |
+| `packages/db` | `@ledgerline/db` | Postgres schema + migrations (0001–0005) |
+| `contracts/` | — | `RevenueBatchAnchor` Arc anchor contract (Foundry, MIT) |
+| `apps/demo-seller-express`, `apps/demo-buyer` | — | Example x402 seller + buyer on Arc Testnet |
 
-## Quickstart (credential-free)
+## Quickstart
 
-Requires **Node 22+**, **pnpm 10**, **Docker**.
+Requires **Node 22+**, **pnpm 10**, **Docker**, and (for contract tests) **Foundry**.
 
 ```zsh
 pnpm install
-pnpm db:up                 # first run pulls postgres:16 (~1 min+)
-cp .env.example .env
-pnpm db:migrate            # waits for Postgres ("waiting for postgres..." on a cold start is normal),
-                           # then creates 3 tables: tenants, seller_endpoints, raw_events
-pnpm typecheck
-pnpm dev                   # seller on :4021 — curl http://localhost:4021/healthz
-pnpm dev:buyer             # prints a friendly "blocked on Track A" message and exits (credential-free)
+pnpm db:up && pnpm db:migrate     # Postgres 16 on host port 5433; applies migrations 0001–0005
+pnpm demo                         # the §21 nine-step sequence, end to end
 ```
 
-The live `402 → pay → 200` loop needs Arc Testnet wallets + testnet USDC; see `SPIKE.md`
-and `.env.example`. Until `SELLER_ADDRESS` is set, the paid route is intentionally not
-mounted and the seller only serves `/healthz`.
+`pnpm demo` is **resilient + idempotent**: it runs the live `402 → pay → 200` loop when buyer creds +
+a running seller are present, otherwise it starts from the already-captured `raw_events` from the live
+M0/M1 runs. It commits + verifies on Arc when anchor creds are in `.env`, otherwise it stays offline
+(DB-consistent) and tells you so. A capability banner prints the mode.
+
+To integrate Ledgerline into your own x402 seller, see **[docs/INTEGRATION.md](docs/INTEGRATION.md)**.
+To present the demo, see **[docs/DEMO.md](docs/DEMO.md)**.
+
+## Commands
+
+| Command | Does |
+|---------|------|
+| `pnpm demo` | The full §21 sequence (capture → recognize → split → export → commit → verify) |
+| `pnpm recognize` | Recognize un-recognized receipt analogs into revenue events + ledger |
+| `pnpm anchor:build` | Build a Merkle commitment batch from earned revenue |
+| `pnpm anchor:submit` | Commit the built batch to Arc Testnet (Track-A creds) |
+| `pnpm verify [--onchain]` | Run the 14-step verifier on a revenue event |
+| `pnpm export:csv` | Finance-ready `revenue_events.csv` + `ledger_entries.csv` |
+| `pnpm test` · `pnpm test:security` | Full vitest suite · the §19 security subset |
+| `pnpm contracts:test` · `pnpm vectors:check` | Foundry contract tests · frozen canonicalization vectors |
+
+## Credentials (Track A)
+
+The credential-free path (capture, recognize, build, offline verify, all tests) runs with **zero
+secrets**. Live payment needs Arc Testnet buyer creds; live anchoring needs `ARC_RPC_URL` +
+`ANCHOR_COMMITTER_KEY` (a funded testnet EOA — USDC is gas on Arc) + `ANCHOR_CONTRACT_ADDRESS`. See
+`.env.example`. Secrets live only in the gitignored `.env`.
+
+## What's deferred (honestly)
+
+Hosted ingestion API + API-key management + adapter-event signature verification + the §9 encryption
+envelope (M6+); the dashboard UI (CSV is the MVP substitute); SIWX repeat-access, Gateway transfer
+reconciliation, cash collection / refund reversals; and official x402 signed receipts (Path B). See
+`docs/THREAT_MODEL.md` and `DECISION_LOG.md`.
 
 ## License
 
