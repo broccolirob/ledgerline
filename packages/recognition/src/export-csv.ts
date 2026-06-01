@@ -4,7 +4,7 @@
 import { Pool } from 'pg';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { DEMO_TENANT_ID } from './index.js';
+import { DEMO_TENANT_ID, type Db } from './index.js';
 
 const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerline';
 
@@ -37,54 +37,68 @@ const LEDGER_COLUMNS = [
   'memo', 'effective_at', 'created_at',
 ];
 
+/** Generate the two finance CSVs for a tenant (the exact bytes the CLI writes). Pure read + render,
+ *  so it is unit-testable without the filesystem. */
+export async function generateCsvExports(
+  db: Db,
+  tenantId: string,
+): Promise<{ revenueCsv: string; ledgerCsv: string; revenueRows: number; ledgerRows: number }> {
+  // revenue_events.csv — join-traceable back to receipt/delivery (acceptance line).
+  // service_deliveries has no unique key on interaction_id; recognition writes exactly one today,
+  // but DISTINCT ON (re.id) guards this finance export from double-counting a revenue_event if an
+  // interaction ever gains a second delivery row (picks the earliest delivery deterministically).
+  // Wrapped so the CSV keeps created_at ordering while DISTINCT ON requires re.id-led ordering.
+  const revenue = await db.query(
+    `select * from (
+       select distinct on (re.id)
+              re.id as revenue_event_id, re.tenant_id, re.interaction_id, i.raw_event_id,
+              re.revenue_source, re.pricing_model_id, re.gross_amount_atomic, re.asset, re.network,
+              re.revenue_status, re.earned_at, sd.id as service_delivery_id, sd.delivery_status,
+              sd.http_status, cs.status as collection_status, re.created_at
+         from revenue_events re
+         join interactions i on i.id = re.interaction_id
+         left join service_deliveries sd on sd.interaction_id = i.id
+         left join revenue_collection_state cs on cs.revenue_event_id = re.id
+        where re.tenant_id = $1
+        order by re.id, sd.created_at nulls last
+     ) t
+     order by created_at, revenue_event_id`,
+    [tenantId],
+  );
+
+  const ledger = await db.query(
+    `select le.id as ledger_entry_id, le.tenant_id, le.entry_group_id, jt.txn_type, jt.posting_key,
+            jt.revenue_treatment, la.account_type, la.owner_type, la.owner_id, la.name as account_name,
+            le.direction, le.amount_atomic, le.asset, le.memo, jt.effective_at, le.created_at
+       from ledger_entries le
+       join journal_transactions jt on jt.id = le.entry_group_id
+       join ledger_accounts la on la.id = le.account_id
+      where le.tenant_id = $1
+      order by jt.effective_at, jt.id, le.id`,
+    [tenantId],
+  );
+
+  return {
+    revenueCsv: toCsv(REVENUE_COLUMNS, revenue.rows),
+    ledgerCsv: toCsv(LEDGER_COLUMNS, ledger.rows),
+    revenueRows: revenue.rows.length,
+    ledgerRows: ledger.rows.length,
+  };
+}
+
 async function main(): Promise<void> {
   const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
   const outDir = resolve(process.env.EXPORT_DIR ?? 'exports');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
-    // revenue_events.csv — join-traceable back to receipt/delivery (acceptance line).
-    // service_deliveries has no unique key on interaction_id; recognition writes exactly one today,
-    // but DISTINCT ON (re.id) guards this finance export from double-counting a revenue_event if an
-    // interaction ever gains a second delivery row (picks the earliest delivery deterministically).
-    // Wrapped so the CSV keeps created_at ordering while DISTINCT ON requires re.id-led ordering.
-    const revenue = await pool.query(
-      `select * from (
-         select distinct on (re.id)
-                re.id as revenue_event_id, re.tenant_id, re.interaction_id, i.raw_event_id,
-                re.revenue_source, re.pricing_model_id, re.gross_amount_atomic, re.asset, re.network,
-                re.revenue_status, re.earned_at, sd.id as service_delivery_id, sd.delivery_status,
-                sd.http_status, cs.status as collection_status, re.created_at
-           from revenue_events re
-           join interactions i on i.id = re.interaction_id
-           left join service_deliveries sd on sd.interaction_id = i.id
-           left join revenue_collection_state cs on cs.revenue_event_id = re.id
-          where re.tenant_id = $1
-          order by re.id, sd.created_at nulls last
-       ) t
-       order by created_at, revenue_event_id`,
-      [tenantId],
-    );
-
-    const ledger = await pool.query(
-      `select le.id as ledger_entry_id, le.tenant_id, le.entry_group_id, jt.txn_type, jt.posting_key,
-              jt.revenue_treatment, la.account_type, la.owner_type, la.owner_id, la.name as account_name,
-              le.direction, le.amount_atomic, le.asset, le.memo, jt.effective_at, le.created_at
-         from ledger_entries le
-         join journal_transactions jt on jt.id = le.entry_group_id
-         join ledger_accounts la on la.id = le.account_id
-        where le.tenant_id = $1
-        order by jt.effective_at, jt.id, le.id`,
-      [tenantId],
-    );
-
+    const { revenueCsv, ledgerCsv, revenueRows, ledgerRows } = await generateCsvExports(pool, tenantId);
     await mkdir(outDir, { recursive: true });
     const revPath = join(outDir, 'revenue_events.csv');
     const ledPath = join(outDir, 'ledger_entries.csv');
-    await writeFile(revPath, toCsv(REVENUE_COLUMNS, revenue.rows));
-    await writeFile(ledPath, toCsv(LEDGER_COLUMNS, ledger.rows));
-
-    console.log(`[export:csv] wrote ${revenue.rows.length} revenue row(s) -> ${revPath}`);
-    console.log(`[export:csv] wrote ${ledger.rows.length} ledger entry row(s) -> ${ledPath}`);
+    await writeFile(revPath, revenueCsv);
+    await writeFile(ledPath, ledgerCsv);
+    console.log(`[export:csv] wrote ${revenueRows} revenue row(s) -> ${revPath}`);
+    console.log(`[export:csv] wrote ${ledgerRows} ledger entry row(s) -> ${ledPath}`);
   } finally {
     await pool.end();
   }

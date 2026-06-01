@@ -166,6 +166,48 @@ describe('verify (§17.6 14-step, Path-C re-scoped)', () => {
     expect(byN[0]!.status).toBe('fail'); // canonical reproduction can't rebuild the committed root
     expect(byN[9]!.status).toBe('fail'); // not all journal legs are co-located in the batch (Inv 11)
   });
+
+  it('a changed revenue_event gross_amount fails the verifier (step 0 + the exact-pricing tie-out)', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    expect((await verify(pool, reId!)).pass).toBe(true); // baseline passes
+    // tamper the revenue_event's gross AFTER commit — its committed leaf no longer reproduces, and the
+    // settled gross no longer matches the configured exact price.
+    await pool.query(`update revenue_events set gross_amount_atomic = '4000' where id = $1`, [reId]);
+    const res = await verify(pool, reId!);
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(res.pass).toBe(false);
+    expect(byN[0]!.status).toBe('fail'); // revenue_event leaf no longer reproduces the committed root
+    expect(byN[7]!.status).toBe('fail'); // 4000 != pricing_models.fixed_amount_atomic (Invariant 2)
+  });
+
+  it('a reshuffled split (value moved between payables, sum preserved) fails the verifier even though it still balances', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    expect((await verify(pool, reId!)).pass).toBe(true);
+    // Move 100 atomic from the model_provider payable (600) to the data_provider payable (210),
+    // keeping ΣDr=ΣCr and the payable-credit total unchanged — so step 8 tie-out and step 9 balance
+    // BOTH still hold. Only the Arc-committed Merkle root (step 0/13) catches this reallocation.
+    await pool.query(
+      `update ledger_entries set amount_atomic = '500' where id in (
+        select le.id from ledger_entries le join journal_transactions jt on jt.id=le.entry_group_id
+         where jt.revenue_event_id=$1 and le.direction='credit' and le.amount_atomic='600' limit 1)`,
+      [reId],
+    );
+    await pool.query(
+      `update ledger_entries set amount_atomic = '310' where id in (
+        select le.id from ledger_entries le join journal_transactions jt on jt.id=le.entry_group_id
+         where jt.revenue_event_id=$1 and le.direction='credit' and le.amount_atomic='210' limit 1)`,
+      [reId],
+    );
+    const res = await verify(pool, reId!);
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    // The reshuffle preserves balance (step 9) but the committed leaves no longer reproduce: the
+    // tamper-evidence is the Arc Merkle root, not the accounting invariants alone.
+    expect(byN[9]!.status).toBe('pass'); // still balances — accounting checks alone would MISS this
+    expect(byN[0]!.status).toBe('fail'); // canonical reproduction catches the reallocation
+    expect(res.pass).toBe(false);
+  });
 });
 
 describe('verifier package', () => {

@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Pool } from 'pg';
 import { allocateSplit, parseReceipt, runRecognitionPass, resolveDemoConfig, type SplitRuleRow, type RawEventRow } from '@ledgerline/recognition';
+import { generateCsvExports } from '../src/export-csv';
 import { computeRequestFingerprint } from '@ledgerline/seller-client';
 import { setupDatabase, dropDatabase, makeRawEvent, insertRawEvent, TENANT } from './helpers';
 
@@ -80,6 +81,63 @@ describe('parseReceipt fuzz — rejects malformed payloads, never coerces a bad 
   });
   it('rejects an unknown delivery.status', () => {
     expect(() => parseReceipt(wrap(goodPay, { status: 'weird', httpStatus: 200 }))).toThrow();
+  });
+});
+
+describe('T9 (export) — finance CSV exposes no raw URL / prompt / payer address', () => {
+  const TEST_DB = 'ledgerline_sec_export';
+  let pool: Pool;
+  beforeAll(async () => {
+    pool = await setupDatabase(TEST_DB);
+    await insertRawEvent(pool, makeRawEvent({ settlementReference: 'export-sec' }));
+    await runRecognitionPass(pool, await resolveDemoConfig(pool, TENANT));
+  }, 60_000);
+  afterAll(async () => {
+    await dropDatabase(pool, TEST_DB);
+  });
+
+  it('the exact CSV the CLI writes carries no raw URL / payer / prompt — including the free-text memo + account_name columns', async () => {
+    const { revenueCsv, ledgerCsv, revenueRows, ledgerRows } = await generateCsvExports(pool, TENANT);
+    expect(revenueRows).toBeGreaterThanOrEqual(1);
+    expect(ledgerRows).toBeGreaterThanOrEqual(8); // 8 legs of the R1′ journal — guards against a vacuous empty-CSV pass
+
+    // memo + account_name are the ONLY exported columns that carry human-derived free text, so they are
+    // the realistic leak channel (a fixed UUID/enum column structurally cannot smuggle a URL). Pull the
+    // actual values the CSV renders and assert: the channel is live (non-empty + present in the bytes)
+    // AND it carries none of the never-export tokens. This is what makes the byte-scan non-vacuous —
+    // a regression that wrote a resource URL or payer address into a memo would surface here and FAIL.
+    const freeText = await pool.query<{ memo: string; name: string }>(
+      `select le.memo, la.name from ledger_entries le join ledger_accounts la on la.id = le.account_id
+        where le.tenant_id = $1`,
+      [TENANT],
+    );
+    expect(freeText.rows.length).toBeGreaterThanOrEqual(8);
+    for (const { memo, name } of freeText.rows) {
+      expect(memo.length).toBeGreaterThan(0);
+      expect(ledgerCsv).toContain(memo); // the (safe) memo is faithfully exported — proves the channel is exercised
+      for (const banned of ['://', '/api/', 'prompt', 'company-brief', '0xb5e1ffa698b8458260af9d6316971b83cd72a72c']) {
+        expect(memo.toLowerCase()).not.toContain(banned);
+        expect(name.toLowerCase()).not.toContain(banned);
+      }
+    }
+
+    // backstop: the full export bytes carry none of the never-export tokens (resource URL/path, prompt,
+    // the hash field names, or the literal demo payer address that capture hashed upstream).
+    const both = (revenueCsv + '\n' + ledgerCsv).toLowerCase();
+    for (const banned of ['/api/', 'http://', 'https://', 'prompt', 'company-brief', 'resourcehash', 'payerhash']) {
+      expect(both).not.toContain(banned);
+    }
+    expect(both).not.toContain('0xb5e1ffa698b8458260af9d6316971b83cd72a72c');
+  });
+
+  it('CSV column headers are exactly the published schema (no surprise column could leak a field)', async () => {
+    const { revenueCsv, ledgerCsv } = await generateCsvExports(pool, TENANT);
+    expect(revenueCsv.split('\r\n')[0]).toBe(
+      'revenue_event_id,tenant_id,interaction_id,raw_event_id,revenue_source,pricing_model_id,gross_amount_atomic,asset,network,revenue_status,earned_at,service_delivery_id,delivery_status,http_status,collection_status,created_at',
+    );
+    expect(ledgerCsv.split('\r\n')[0]).toBe(
+      'ledger_entry_id,tenant_id,entry_group_id,txn_type,posting_key,revenue_treatment,account_type,owner_type,owner_id,account_name,direction,amount_atomic,asset,memo,effective_at,created_at',
+    );
   });
 });
 

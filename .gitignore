@@ -36,6 +36,7 @@ contracts/broadcast/
 /cache/
 
 # CSV / verifier-package exports
+/exports/
 packages/recognition/exports/
 packages/anchor/exports/
 

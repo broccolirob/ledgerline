@@ -41,7 +41,9 @@ function anchorCredsPresent(): boolean {
 
 /** Quick liveness probe of the demo seller's /healthz, so live-pay is only attempted when it can succeed. */
 async function sellerReachable(): Promise<boolean> {
-  const base = (process.env.SELLER_URL ?? 'http://localhost:4021/api/company-brief').replace(/\/api\/.*$/, '');
+  // Probe healthz at the URL ORIGIN, robust to any path shape (a regex /api/ strip silently breaks
+  // for a SELLER_URL on a different route and downgrades a funded buyer to CAPTURED-START).
+  const base = new URL(process.env.SELLER_URL ?? 'http://localhost:4021/api/company-brief').origin;
   try {
     const ctrl = AbortSignal.timeout(1500);
     const res = await fetch(`${base}/healthz`, { signal: ctrl });
@@ -93,8 +95,13 @@ async function main(): Promise<void> {
     const out = (r.stdout || '') + (r.stderr || '');
     if (r.status === 0 && /\bpaid:/.test(out)) {
       line(out.trim().split('\n').filter((l) => /paid:/.test(l)).join('\n'));
+    } else if (r.status !== 0) {
+      // A non-zero exit is a real buyer-side crash, NOT the expected no-balance case — surface a tail
+      // so a live-demo failure is diagnosable in front of a reviewer rather than silently downgraded.
+      line(`⚠ demo-buyer exited ${r.status} (not the expected no-balance return) — continuing from captured events. Last output:`);
+      line(out.trim().split('\n').slice(-8).join('\n'));
     } else {
-      line('live pay loop did not complete (balance/deposit needed) — continuing from captured events.');
+      line('live pay loop did not complete (no Gateway balance) — continuing from captured events.');
     }
   } else if (buyerFunded) {
     line('Buyer creds present but seller not reachable on /healthz — start it with `pnpm dev`.');
