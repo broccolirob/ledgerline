@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Newer commits on the same ref supersede in-flight runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck + test (node 22 · pg 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ledgerline
+          POSTGRES_PASSWORD: ledgerline
+          POSTGRES_DB: ledgerline
+        # Host 5433 mirrors infra/docker-compose.yml and the test harness default DSN.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U ledgerline -d ledgerline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Same DSN the throwaway-DB harness defaults to. Tests create + migrate their own
+      # databases per file, so no separate db:migrate step is needed.
+      DATABASE_URL: postgresql://ledgerline:ledgerline@localhost:5433/ledgerline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm vectors:check # frozen §17.5 LCJ vectors must not drift
+      - run: pnpm test # full vitest suite (incl. *.security.test.ts) against pg 16
+
+  contracts:
+    name: forge test (RevenueBatchAnchor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      # lib/ is gitignored; pin forge-std to the version used locally (1.16.1).
+      - name: Fetch forge-std
+        run: git clone --branch v1.16.1 --depth 1 https://github.com/foundry-rs/forge-std.git contracts/lib/forge-std
+      # Scoped to our suite — forge-std ships its own tests under lib/.
+      - name: forge test
+        working-directory: contracts
+        run: forge test --match-contract RevenueBatchAnchorTest
