@@ -4,6 +4,7 @@
 import { Pool } from 'pg';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DEMO_TENANT_ID, type Db } from './index.js';
 
 const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerline';
@@ -104,7 +105,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
-  console.error(e);
-  process.exit(1);
-});
+// Run the CLI only when this file is executed directly (tsx src/export-csv.ts), NOT when a test
+// imports generateCsvExports from it. Without this guard, importing the module ran main() as a side
+// effect — opening a DB connection and, on any failure, calling process.exit(1) mid-test (which
+// failed the whole vitest run in CI against a non-migrated database, and silently wrote exports/
+// on every local `pnpm test`).
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch((e: unknown) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
