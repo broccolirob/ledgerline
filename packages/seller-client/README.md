@@ -83,7 +83,7 @@ await writeRawEvent(db, ev); // or: await fetch(myCollector, { method: 'POST', b
 | `occurred_at` | capture time |
 | `canonical_hash` | `canonicalHash(payload_redacted)` (see the hashing-layers note below) |
 | `payload_redacted` | the redacted analog — hashes only; no raw payer/resource/header |
-| `adapter_key_id` / `adapter_signature` | **null today** — adapter-event signing is M6b (closes T6) |
+| `adapter_key_id` / `adapter_signature` | set when the event is signed (M6b — see *Signing your events*); null otherwise |
 | `schema_version` | e.g. `m1.1` |
 
 ### Hashing layers — do not conflate
@@ -94,11 +94,35 @@ use [`@ledgerline/canonical`](../canonical) (LCJ v1 + keccak256), a separate, **
 the two distinct: the capture hash binds the raw event; the canonical leaf hash binds what goes
 on-chain.
 
+## Signing your events (M6b — closes T6)
+
+Adapters can sign each event so the recognition pass can verify it came from a known key (threat T6).
+Signing is **Ed25519**: the adapter holds the private key; only the public key is registered. The
+signed message binds the tenant, the idempotency key, and the redacted payload.
+
+```ts
+import { makePostgresSink } from '@ledgerline/seller-client';
+// keyId + private-key PEM come from `pnpm adapter:keygen` (registers the public key; prints the private)
+const sink = makePostgresSink(pool, {
+  tenantId,
+  signer: { keyId: process.env.ADAPTER_KEY_ID!, privateKeyPem: process.env.ADAPTER_SIGNING_KEY! },
+});
+```
+
+The recognition pass verifies signatures only when `requireAdapterSignature` is set (default off keeps
+unsigned captures working). It checks the signature against the active keys in the `adapter_keys`
+registry and rejects unsigned / forged / unknown-key / revoked events (no revenue). Generate + register
+a key with `pnpm adapter:keygen`; rotate by running it again; revoke with one SQL update (printed by
+the CLI). The **operated** key registry, rotation/revocation service, and hosted-boundary verification
+are the commercial M7 layer — this package ships the format + reference verifier they consume.
+
 ## Exports
 
-- Types: `LedgerlineCaptureInput`, `RawEventInput`, `RequestFingerprintInput`, `Db`
+- Types: `LedgerlineCaptureInput`, `RawEventInput`, `RequestFingerprintInput`, `AdapterSigner`, `Db`
 - Capture: `buildRawEventFromCapture(tenantId, input)`, `writeRawEvent(db, ev)`,
-  `makePostgresSink(db, { tenantId })`
+  `makePostgresSink(db, { tenantId, signer? })`
+- Signing (M6b): `generateAdapterKeyPair()`, `signRawEvent(ev, signer)`,
+  `verifyRawEventSignature(parts, signatureBase64, publicKeyPem)`, `adapterSigningMessage(parts)`
 - Primitives: `computeRequestFingerprint(input)`, `canonicalHash(payload)`
 - M0 demo helper: `allocateOneSplit(amountAtomic)` (illustrative; the real split engine is in
   `@ledgerline/recognition`)

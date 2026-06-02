@@ -14,7 +14,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 // Type-only re-use of the seller-client `Db` seam (pg Pool | PoolClient); erased at runtime.
-import type { Db } from '@ledgerline/seller-client';
+import { verifyRawEventSignature, type Db } from '@ledgerline/seller-client';
 
 export type { Db };
 
@@ -39,6 +39,9 @@ export interface RawEventRow {
   occurred_at: Date;
   payload_redacted: Record<string, unknown>;
   event_seq: string;
+  idempotency_key?: string; // loaded for adapter-signature verification (M6b)
+  adapter_key_id?: string | null;
+  adapter_signature?: string | null;
 }
 
 export interface RecognitionConfig {
@@ -46,6 +49,13 @@ export interface RecognitionConfig {
   pricingModelId: string;
   splitGroupId: string;
   splitGroupVersion: number;
+  /** M6b/T6: when true, every raw event must carry a valid adapter signature from an active registry
+   *  key; unsigned/forged/unknown-key/revoked events are rejected (no revenue). Default false keeps
+   *  the local/OSS pipeline backward-compatible with existing unsigned captures. */
+  requireAdapterSignature?: boolean;
+  /** keyId -> Ed25519 SPKI public-key PEM (the tenant's active keys; see resolveAdapterKeys). When
+   *  requireAdapterSignature is set and this is absent, runRecognitionPass resolves it once. */
+  adapterKeys?: Map<string, string>;
 }
 
 export type DeliveryStatus = 'delivered' | 'failed' | 'canceled';
@@ -122,11 +132,11 @@ export interface PostingContext {
   allocation: SplitAllocation;
 }
 
-export type RecognitionOutcome = 'recognized' | 'replayed' | 'F1_skipped';
+export type RecognitionOutcome = 'recognized' | 'replayed' | 'F1_skipped' | 'rejected_unsigned';
 
 export interface RecognitionResult {
   rawEventId: string;
-  interactionId: string;
+  interactionId?: string; // absent when an event is rejected before any interaction is created (T6)
   outcome: RecognitionOutcome;
   revenueEventId?: string;
   journalTxnId?: string;
@@ -138,6 +148,7 @@ export interface RecognitionPassSummary {
   recognized: number;
   replayed: number;
   f1Skipped: number;
+  rejectedUnsigned: number; // M6b/T6: events rejected for a missing/invalid/unknown-key signature
   errors: Array<{ rawEventId: string; message: string }>;
   maxEventSeq?: string;
 }
@@ -540,6 +551,30 @@ async function recognizeOnClient(
   // Different tenants never block each other. Released at the row's COMMIT/ROLLBACK.
   await client.query('select pg_advisory_xact_lock(hashtext($1))', [cfg.tenantId]);
 
+  // M6b / T6: gate on the adapter signature BEFORE parsing or writing anything, so a forged/unsigned
+  // event never becomes revenue and never creates a row. Default-off (requireAdapterSignature) keeps
+  // the OSS pipeline backward-compatible with existing unsigned captures.
+  if (cfg.requireAdapterSignature) {
+    const keyId = rawEvent.adapter_key_id ?? undefined;
+    const sig = rawEvent.adapter_signature ?? undefined;
+    const pubPem = keyId ? cfg.adapterKeys?.get(keyId) : undefined;
+    const ok =
+      typeof keyId === 'string' &&
+      typeof sig === 'string' &&
+      typeof pubPem === 'string' &&
+      typeof rawEvent.idempotency_key === 'string' &&
+      verifyRawEventSignature(
+        {
+          tenantId: rawEvent.tenant_id,
+          idempotencyKey: rawEvent.idempotency_key,
+          payloadRedacted: rawEvent.payload_redacted,
+        },
+        sig,
+        pubPem,
+      );
+    if (!ok) return { rawEventId: rawEvent.id, outcome: 'rejected_unsigned' };
+  }
+
   const r = parseReceipt(rawEvent);
   // Weak-anchor observability: with neither a Gateway settlementReference nor a paymentSignatureHash,
   // the idempotency anchor degrades to the request fingerprint, which is identical across two distinct
@@ -758,12 +793,21 @@ export async function runRecognitionPass(
     params.push(opts.sinceEventSeq.toString());
   }
   const res = await db.query<RawEventRow>(
-    `select id, tenant_id, event_type, event_source, occurred_at, payload_redacted, event_seq
+    `select id, tenant_id, event_type, event_source, occurred_at, payload_redacted, event_seq,
+            idempotency_key, adapter_key_id, adapter_signature
        from raw_events ${where} order by event_seq`,
     params,
   );
 
-  const summary: RecognitionPassSummary = { total: 0, recognized: 0, replayed: 0, f1Skipped: 0, errors: [] };
+  // M6b: if signatures are required but keys weren't supplied, resolve the tenant's active keys once
+  // for this pass. NOTE: a per-pass snapshot — a key revoked mid-pass still verifies for the rest of
+  // THIS pass (excluded on the next). Fine for short OSS passes; M7 continuous ingestion should
+  // re-resolve periodically. Required-but-no-keys fails CLOSED (empty map → every event rejected).
+  const effectiveCfg: RecognitionConfig =
+    cfg.requireAdapterSignature && !cfg.adapterKeys
+      ? { ...cfg, adapterKeys: await resolveAdapterKeys(db, cfg.tenantId) }
+      : cfg;
+  const summary: RecognitionPassSummary = { total: 0, recognized: 0, replayed: 0, f1Skipped: 0, rejectedUnsigned: 0, errors: [] };
   // maxEventSeq is a SAFE resume cursor: it advances only across the unbroken prefix of committed
   // rows (recognized / replayed / F1 are all durable outcomes). The FIRST error halts cursor
   // advancement, so a later pass with opts.sinceEventSeq re-attempts the failed row (and everything
@@ -773,9 +817,13 @@ export async function runRecognitionPass(
   for (const row of res.rows) {
     summary.total++;
     try {
-      const result = await recognizeOne(db, cfg, row);
+      const result = await recognizeOne(db, effectiveCfg, row);
       if (result.outcome === 'recognized') summary.recognized++;
       else if (result.outcome === 'replayed') summary.replayed++;
+      // rejected_unsigned advances the resume cursor like a durable outcome. The OSS default re-scans
+      // all rows each pass (no sinceEventSeq), so a later-registered key still picks it up; M7
+      // persisted-cursor ingestion must decide whether to re-evaluate rejected events.
+      else if (result.outcome === 'rejected_unsigned') summary.rejectedUnsigned++;
       else summary.f1Skipped++;
       if (cursorOpen) summary.maxEventSeq = row.event_seq;
     } catch (e) {
@@ -803,4 +851,13 @@ export async function resolveDemoConfig(db: Db, tenantId: string = DEMO_TENANT_I
   if (!sgRow) throw new Error(`resolveDemoConfig: split_groups '${DEMO_SPLIT_GROUP_NAME}' not found — run migration 0004`);
 
   return { tenantId, pricingModelId: pmId, splitGroupId: sgRow.id, splitGroupVersion: sgRow.version };
+}
+
+/** Load the active adapter public keys for a tenant: keyId -> Ed25519 SPKI PEM (M6b / T6). */
+export async function resolveAdapterKeys(db: Db, tenantId: string): Promise<Map<string, string>> {
+  const res = await db.query<{ key_id: string; public_key: string }>(
+    `select key_id, public_key from adapter_keys where tenant_id=$1 and status='active'`,
+    [tenantId],
+  );
+  return new Map(res.rows.map((row) => [row.key_id, row.public_key]));
 }

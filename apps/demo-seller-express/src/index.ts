@@ -40,7 +40,21 @@ if (!sellerAddress) {
   // analog). The pool is lazy — it only connects on the first capture.
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
-  const sink = makePostgresSink(pool, { tenantId });
+  // M6b (optional): sign captured events when an adapter key is configured (`pnpm adapter:keygen`).
+  // Unsigned by default; recognition only ENFORCES signatures when requireAdapterSignature is set.
+  const hasKey = Boolean(process.env.ADAPTER_SIGNING_KEY);
+  const hasKeyId = Boolean(process.env.ADAPTER_KEY_ID);
+  if (hasKey !== hasKeyId) {
+    console.warn(
+      '[demo-seller] only one of ADAPTER_SIGNING_KEY / ADAPTER_KEY_ID is set — signing is OFF. Set both (from `pnpm adapter:keygen`) or neither.',
+    );
+  }
+  const signer =
+    hasKey && hasKeyId
+      ? { keyId: process.env.ADAPTER_KEY_ID!, privateKeyPem: process.env.ADAPTER_SIGNING_KEY! }
+      : undefined;
+  console.log(`[demo-seller] adapter signing ${signer ? `ENABLED (keyId=${signer.keyId})` : 'disabled'}`);
+  const sink = makePostgresSink(pool, { tenantId, signer }); // throws at boot if the key is malformed
 
   app.post(
     '/api/company-brief',

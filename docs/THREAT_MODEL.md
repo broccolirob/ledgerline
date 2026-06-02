@@ -3,8 +3,7 @@
 Maps the build-plan §16 threats to their **current status** in the shipped demo (M0–M5), with the
 specific code or test that backs each claim. Status is deliberately honest — the security test suite
 (`pnpm test:security`) is the cross-check: every **TESTED** row maps to a passing test, and every
-**DEFERRED** control that could be mistaken for present has a *negative* test proving its absence
-(e.g. T6).
+**DEFERRED / PARTIAL** control that could be mistaken for present is named as such, never implied.
 
 **Legend**
 - **ENFORCED** — a mechanism in shipped code prevents this.
@@ -13,8 +12,9 @@ specific code or test that backs each claim. Status is deliberately honest — t
 - **DEFERRED** — schema/design accounts for it; runtime not built (named milestone).
 
 Scope note: the demo is **Path C** (the Ledgerline receipt analog), runs one Express seller + a local
-recognition pass + the Arc anchor. There is **no hosted ingestion API, no API-key layer, and no
-adapter-event signature verification** yet — those are M6+. This document does not pretend otherwise.
+recognition pass + the Arc anchor. Adapter-event signing + **local** signature verification landed in
+M6b (opt-in via `requireAdapterSignature`); there is still **no hosted ingestion API and no API-key
+layer** (those, and the operated key-registry service, are M7). This document does not pretend otherwise.
 
 ---
 
@@ -25,7 +25,7 @@ adapter-event signature verification** yet — those are M6+. This document does
 | **T3** | Payment verified/settled but service not delivered | **TESTED** | Recognition fires only on `payment.verified === true AND delivery.status === 'delivered'` (2xx); else the F1 failure-record path, no revenue/journal. Tests: M2 `recognize.db.test.ts` F1 (failed / unverified-2xx / canceled). |
 | **T4** | Service delivered but signed receipt missing | **PARTIAL (by design — Path C)** | No official x402 Signed Receipt exists in the demo (D-0001); the verifier asserts the **Ledgerline receipt analog** (`artifact_type='payment_signature'`) and says so explicitly — never "Signed Receipt". Verifier steps 1–3, `anchor/src/index.ts` `verify`. Official receipts = the deferred Path-B milestone. |
 | **T5** | Metadata leakage via resourceUrl/query/prompt/reason | **PARTIAL** | Capture hashes sensitive fields (`resourceHash`, `payerHash`, `paymentSignatureHash`; raw values never stored in public columns — `seller-client/src/index.ts`). The full §9 **encryption envelope** (encrypted off-chain blob + KMS) is **deferred (M6+)**. |
-| **T6** | Seller adapter spoofing / event forgery | **DEFERRED — NOT a control yet (M6)** | `raw_events.adapter_key_id` / `adapter_signature` columns exist but are **written null and never verified**. The recognition pass authenticates nothing about the capturing adapter. **Negative test** `recognition.security.test.ts` "T6 — adapter-event signing is NOT verified" asserts the gap so this row cannot drift into a false claim. Closing it (sign + server-side verify) is the headline M6 item. |
+| **T6** | Seller adapter spoofing / event forgery | **TESTED (local/OSS — M6b)** | The adapter signs each event (Ed25519 over tenant + idempotency-key + redacted payload) and the recognition pass verifies it against the per-tenant `adapter_keys` registry (migration 0006) before recognizing: unsigned / forged / unknown-key / revoked events are rejected with no revenue when `requireAdapterSignature` is set. `@ledgerline/seller-client` `signRawEvent` / `verifyRawEventSignature`; `recognition/src/index.ts` verify gate + `resolveAdapterKeys`. Tests: `recognition.security.test.ts` "T6 … positive control" (only a validly-signed active-key event recognizes; the other four are rejected) + a DB-round-trip test (the signed bytes survive jsonb). The **operated** key registry / rotation-revocation service and server-side verification at the hosted ingestion boundary are **M7/private** (`COMMERCIAL_BOUNDARY.md`). |
 | **T7** | Split-rule tampering after revenue is earned | **TESTED** | Splits use versioned `split_groups`/`split_rules`; allocations are immutable (insert-only, append-only reversals); the journal's leaves are committed to the Arc Merkle root, so post-hoc edits fail verification. The verifier's step-0 canonical reproduction + step-10 split-version check (`anchor/src/index.ts` `verify`) detect tampering. Tests: `anchor.db.test.ts` tampered-leaf → step 0 FAIL; a changed `gross_amount_atomic` → step 0 + step-7 exact-pricing tie-out FAIL; a **value-preserving split reshuffle** (100 atomic moved between two payable credits) → step 9 still BALANCES yet step 0 FAILS — i.e. the Arc Merkle root, not the accounting invariants alone, is what catches a reallocation. |
 | **T8** | Rounding/dust exploitation in tiny payments | **TESTED** | Integer-only bigint allocation; dust folded deterministically into the publisher; rule set must sum to exactly 10000 bps (over- and under-allocation both rejected). `recognition/src/index.ts` `allocateSplit`. Tests: `recognition.security.test.ts` "T8" (overflow + under-sum rejected; value conserved across many gross amounts incl. 1e18+7). |
 | **T9** | Arc commitment leaks sensitive metadata | **TESTED** | Leaves commit only hashes + non-sensitive fields; the §12 never-commit set (`account_name;memo;units;raw_urls;customer_id`) is excluded by the leaf builders (`canonical/src/index.ts` `revenueEventLeaf`/`ledgerEntryLeaf`, `omitted_from_leaf` descriptor). Only roots + policy hashes go on-chain. Tests: `canonical.security.test.ts` + `anchor.security.test.ts` "T9" (leaf bytes contain no banned field; package batch metadata is hashes-only); `recognition.security.test.ts` "T9 (export)" — the finance CSVs the CLI writes carry no raw resource path / URL / prompt / payer address, and their column headers are exactly the published schema (so no surprise column could ever leak a field). |
@@ -41,13 +41,14 @@ adapter-event signature verification** yet — those are M6+. This document does
 
 ## Honest summary
 
-- **Strong now (TESTED):** T1, T2, T3, T7, T8, T9, T11, T16 — the recognition→ledger→Arc-anchor core is
-  replay-safe, value-conserving, tenant-isolated, metadata-minimized on-chain, and
-  determinism-pinned, each with a test.
-- **Mitigated with a named gap (PARTIAL):** T4 (Path C analog, not official receipt), T5 (hashed but
-  no encryption envelope), T10 (single committer EOA + revoke; no KMS), T12 (units trusted in MVP).
-- **The one to close next (T6):** adapter events are not authenticated server-side. It is the
-  single most defensible M6 addition; until then the negative test keeps this document honest.
+- **Strong now (TESTED):** T1, T2, T3, T6, T7, T8, T9, T11, T16 — the recognition→ledger→Arc-anchor core
+  is replay-safe, value-conserving, adapter-authenticated (M6b), tenant-isolated, metadata-minimized
+  on-chain, and determinism-pinned, each with a test.
+- **Mitigated with a named gap (PARTIAL):** T4 (Path C analog, not official receipt — the M6c milestone),
+  T5 (hashed but no encryption envelope), T10 (single committer EOA + revoke; no KMS), T12 (units trusted
+  in MVP).
+- **T6 closed locally (M6b):** the adapter signs events and recognition verifies them against the
+  `adapter_keys` registry. The *operated* registry/rotation service + hosted-boundary verification are M7.
 - **Deferred by design (T13/T14/T15):** SIWX, Gateway reconciliation, and the P1/F2 cash race gate on
   post-demo milestones; none can fire in the current demo surface.
 

@@ -1,7 +1,7 @@
 // @ledgerline/seller-client — Milestone 1.
 // Framework-agnostic seller-side capture: request fingerprinting (§8), the Ledgerline
 // receipt analog (Path C), the raw_events write path, and the demo split helper.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, generateKeyPairSync, sign as edSign, verify as edVerify } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 /** Minimal pg seam — satisfied by both `pg.Pool` and `pg.PoolClient`. */
@@ -121,6 +121,77 @@ export async function writeRawEvent(db: Db, ev: RawEventInput): Promise<void> {
   );
 }
 
+// ---- adapter-event signing (M6b — closes T6) -------------------------------
+// Ed25519 over a deterministic message binding the tenant, the event identity (idempotency key), and
+// the full redacted payload (which itself carries schemaVersion + the request fingerprint). The signer
+// (the adapter) holds the private key; the verifier (recognition) holds only the public key via the
+// adapter_keys registry. SEPARATE from canonicalHash (raw-event integrity) and the M4
+// @ledgerline/canonical LCJ+keccak committed-leaf format — three distinct roles, do not conflate.
+
+export interface AdapterSigner {
+  keyId: string;
+  privateKeyPem: string;
+}
+
+/** The exact bytes signed/verified for an adapter event. payloadRedacted carries schemaVersion + the
+ *  request fingerprint, so binding it covers schema + tamper; occurredAt is excluded to avoid Date
+ *  round-trip precision skew (identity is already bound by tenantId + idempotencyKey). */
+export function adapterSigningMessage(parts: {
+  tenantId: string;
+  idempotencyKey: string;
+  payloadRedacted: Record<string, unknown>;
+}): Buffer {
+  // Normalize through JSON.parse(JSON.stringify(...)) so the signed bytes match the jsonb-stored form
+  // (Postgres jsonb drops `undefined` keys exactly as JSON.stringify does). This makes sign (raw
+  // payload) and verify (payload reloaded from jsonb) symmetric across the DB round-trip — the same
+  // cleaning writeRawEvent applies before insert.
+  const payload = JSON.parse(JSON.stringify(parts.payloadRedacted)) as Record<string, unknown>;
+  return Buffer.from(
+    stableStringify({
+      v: 1,
+      tenantId: parts.tenantId,
+      idempotencyKey: parts.idempotencyKey,
+      payloadRedacted: payload,
+    }),
+    'utf8',
+  );
+}
+
+/** Generate an Ed25519 adapter keypair. keyId = first 32 hex chars (128 bits) of sha256(public-key
+ *  PEM) — wide enough that accidental collisions are negligible. Authenticity rests on the signature,
+ *  not the keyId; the keyId is only the registry lookup handle. */
+export function generateAdapterKeyPair(): { keyId: string; publicKeyPem: string; privateKeyPem: string } {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  const keyId = createHash('sha256').update(publicKeyPem).digest('hex').slice(0, 32);
+  return { keyId, publicKeyPem, privateKeyPem };
+}
+
+/** Sign a raw event: returns a copy with adapterKeyId + base64 adapterSignature set (Ed25519). */
+export function signRawEvent(ev: RawEventInput, signer: AdapterSigner): RawEventInput {
+  const msg = adapterSigningMessage({
+    tenantId: ev.tenantId,
+    idempotencyKey: ev.idempotencyKey,
+    payloadRedacted: ev.payloadRedacted,
+  });
+  const signature = edSign(null, msg, signer.privateKeyPem); // Ed25519 takes algorithm = null
+  return { ...ev, adapterKeyId: signer.keyId, adapterSignature: signature.toString('base64') };
+}
+
+/** Verify an adapter signature over the event. Returns false on any malformation (never throws). */
+export function verifyRawEventSignature(
+  parts: { tenantId: string; idempotencyKey: string; payloadRedacted: Record<string, unknown> },
+  signatureBase64: string,
+  publicKeyPem: string,
+): boolean {
+  try {
+    return edVerify(null, adapterSigningMessage(parts), publicKeyPem, Buffer.from(signatureBase64, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
 // ---- Ledgerline receipt analog (Path C) ------------------------------------
 // Circle's middleware surfaces no Payment-Identifier and no official signed offer/receipt
 // (confirmed). The analog = request fingerprint + the confirmed req.payment context (incl. the
@@ -215,10 +286,26 @@ export function buildRawEventFromCapture(tenantId: string, c: LedgerlineCaptureI
 /** A sink that persists each captured analog to Postgres via {@link writeRawEvent}. */
 export function makePostgresSink(
   db: Db,
-  opts: { tenantId: string },
+  opts: { tenantId: string; signer?: AdapterSigner },
 ): (c: LedgerlineCaptureInput) => Promise<void> {
+  if (opts.signer) {
+    // Fail fast on a malformed/unsupported signing key (e.g. a PEM pasted with escaped \n) at sink
+    // construction. Otherwise signRawEvent would throw on every res.finish and the captured paid call
+    // would be silently dropped (writeRawEvent never runs) — losing a delivered-and-charged event.
+    try {
+      edSign(null, Buffer.from('ledgerline-adapter-signer-check'), opts.signer.privateKeyPem);
+    } catch (e) {
+      throw new Error(
+        `makePostgresSink: invalid adapter signing key (ADAPTER_SIGNING_KEY must be a valid Ed25519 PEM): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
   return async (c: LedgerlineCaptureInput): Promise<void> => {
-    await writeRawEvent(db, buildRawEventFromCapture(opts.tenantId, c));
+    let ev = buildRawEventFromCapture(opts.tenantId, c);
+    if (opts.signer) ev = signRawEvent(ev, opts.signer); // M6b: sign before persist when configured
+    await writeRawEvent(db, ev);
   };
 }
 

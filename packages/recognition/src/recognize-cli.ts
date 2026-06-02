@@ -10,7 +10,12 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
   try {
     const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
-    const cfg = await resolveDemoConfig(pool, tenantId);
+    // M6b/T6: opt in to adapter-signature enforcement without a code edit. When ADAPTER_REQUIRE_SIGNATURE=true,
+    // unsigned/forged/unknown-key/revoked events are rejected (no revenue); keys come from adapter_keys.
+    const cfg = {
+      ...(await resolveDemoConfig(pool, tenantId)),
+      requireAdapterSignature: process.env.ADAPTER_REQUIRE_SIGNATURE === 'true',
+    };
     const summary = await runRecognitionPass(pool, cfg);
     console.log('[recognize] summary:', JSON.stringify(summary, null, 2));
     if (summary.errors.length > 0) {

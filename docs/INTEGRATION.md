@@ -7,8 +7,8 @@ the rest is a local pass over Postgres you run on your own cadence.
 > **Scope: Path C.** This is the **Ledgerline receipt analog** (request fingerprint + redacted payment
 > context + delivery record). It is not an official x402 Signed Receipt — that is the M6c milestone
 > (see `docs/M6_PLAN.md`, `DECISION_LOG.md` D-0001). This guide is the open-source, self-run path;
-> hosted ingestion, API keys, and server-side adapter-signature verification are commercial / M7 (see
-> `COMMERCIAL_BOUNDARY.md`).
+> adapter-event signing + local verification are available (M6b — see *Sign your events*), while hosted
+> ingestion, API keys, and the operated key registry are commercial / M7 (see `COMMERCIAL_BOUNDARY.md`).
 
 ## 0. Prerequisites & install
 
@@ -81,6 +81,24 @@ your own sink) — that is the whole adapter. `@ledgerline/express` is the ~40-l
 [capture contract](../packages/seller-client/README.md#the-capture-contract). (Note: x402 has native
 Python/Go servers, but Circle Gateway Nanopayments is JS-first today — a native non-JS Circle path is
 unproven; an event-emitter or sidecar may be the faster route.)
+
+## 1c. Sign your events (optional — M6b, closes T6)
+
+Authenticate the capturing adapter so forged events can't become revenue. Run `pnpm adapter:keygen`
+to generate an Ed25519 key (it registers the public key in `adapter_keys` and prints the private key
+for your env), then pass a `signer` to the sink:
+
+```ts
+const sink = makePostgresSink(pool, {
+  tenantId: TENANT_ID,
+  signer: { keyId: process.env.ADAPTER_KEY_ID!, privateKeyPem: process.env.ADAPTER_SIGNING_KEY! },
+});
+```
+
+Then run recognition with `requireAdapterSignature: true` (e.g. `{ ...cfg, requireAdapterSignature: true }`):
+unsigned, tampered, unknown-key, and revoked-key events are rejected with no revenue. Default (off)
+leaves existing unsigned captures working. Rotate by re-running keygen; revoke with the SQL the CLI
+prints. The operated registry/rotation service is the M7 layer.
 
 ## 2. Recognize — `raw_events` → revenue + double-entry ledger
 
