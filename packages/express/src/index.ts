@@ -1,5 +1,6 @@
-// @ledgerline/express — Milestone 1.
-// Records ONE Ledgerline receipt analog (Path C) per paid call, on response finish.
+// @ledgerline/express — the reference Ledgerline capture adapter for Express.
+// Records ONE Ledgerline receipt analog (Path C) per paid call, on response finish. A thin shell over
+// @ledgerline/seller-client (the framework-agnostic capture contract). See ./README.md.
 import type { RequestHandler } from 'express';
 import type { LedgerlineCaptureInput } from '@ledgerline/seller-client';
 

@@ -1,6 +1,7 @@
 {
   "name": "@ledgerline/seller-client",
   "license": "Apache-2.0",
+  "description": "Framework-agnostic Ledgerline capture core: turns one paid x402 call into a normalized, privacy-safe raw_events row.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

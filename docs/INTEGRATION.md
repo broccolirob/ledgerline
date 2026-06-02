@@ -1,21 +1,36 @@
 # Integrating Ledgerline into your x402 seller
 
 Goal: from a working x402 seller, start capturing finance-grade revenue records in under a day. The
-flow is **capture → recognize → build → verify**. Capture is a drop-in Express middleware; the rest is
-a local pass over Postgres you run on your own cadence.
+flow is **capture → recognize → build → verify**. Capture is a drop-in middleware (Express today);
+the rest is a local pass over Postgres you run on your own cadence.
 
-> Scope: this is the **Path C** integration (the Ledgerline receipt analog — request fingerprint +
-> redacted payment context + delivery record). It is not an official x402 signed receipt. See
-> `DECISION_LOG.md` D-0001.
+> **Scope: Path C.** This is the **Ledgerline receipt analog** (request fingerprint + redacted payment
+> context + delivery record). It is not an official x402 Signed Receipt — that is the M6c milestone
+> (see `docs/M6_PLAN.md`, `DECISION_LOG.md` D-0001). This guide is the open-source, self-run path;
+> hosted ingestion, API keys, and server-side adapter-signature verification are commercial / M7 (see
+> `COMMERCIAL_BOUNDARY.md`).
 
-## 0. Prerequisites
+## 0. Prerequisites & install
 
 - Node 22+, pnpm 10, Docker (Postgres 16 via `pnpm db:up`), and your x402 seller (Express +
   Circle `createGatewayMiddleware`, or any middleware that sets `req.payment`).
-- `pnpm db:migrate` to create the schema (tenants, raw_events, revenue/ledger tables, commitment_batches).
-- A tenant row. The demo tenant `00000000-0000-4000-8000-000000000001` is seeded by migration 0002;
-  for your own tenant, insert a `tenants` row + a `pricing_models` (exact) + `split_groups`/`split_rules`
-  (see migration `0004_seed_demo_pricing_split.sql` as the template).
+
+**Getting the packages.** `@ledgerline/express` and `@ledgerline/seller-client` are workspace packages
+that export TypeScript directly and are **not yet published to npm** (`private: true`, no build step —
+run via `tsx`). Until they're published, integrate one of two ways:
+
+- **In-repo (fastest to evaluate):** clone this monorepo, add your route to `apps/demo-seller-express`
+  (or a new app), and run via the repo's `tsx` setup. This is the "fresh checkout" path the rest of
+  this guide assumes.
+- **Vendor:** copy `packages/seller-client/src/index.ts` (the framework-agnostic core) and, for
+  Express, `packages/express/src/index.ts` into your project. The public API is small and stable.
+
+A published npm build is a near-term follow-up; the APIs below are the contract it will expose.
+
+**Schema + tenant.** `pnpm db:migrate` creates the schema (tenants, raw_events, revenue/ledger tables,
+commitment_batches). The demo tenant `00000000-0000-4000-8000-000000000001` is seeded by migration
+0002; for your own tenant, insert a `tenants` row + a `pricing_models` (exact) +
+`split_groups`/`split_rules` (use `0004_seed_demo_pricing_split.sql` as the template).
 
 ## 1. Capture — mount the recorder after your payment middleware
 
@@ -48,14 +63,24 @@ app.post(
 );
 ```
 
-The sink writes one `raw_events` row per paid, delivered call. The **load-bearing invariant**:
-`delivery_status='delivered'` requires a 2xx final status; non-2xx flows to the failure path and is
-never recognized as revenue. Sensitive fields (payer, resource path, the payment-authorization header)
-are hashed before storage — raw values never hit public columns.
+**What it writes:** one `raw_events` row per paid, delivered call — a redacted analog (hashes only).
+The **load-bearing invariant**: `delivery_status='delivered'` requires a 2xx final status; non-2xx
+flows to the failure path and is never recognized as revenue. Sensitive fields (payer, resource path,
+the payment-authorization header) are hashed before storage — raw values never hit public columns. The
+exact row shape and the hashing/fingerprint/idempotency rules are the **capture contract** documented
+in [`@ledgerline/seller-client`](../packages/seller-client/README.md#the-capture-contract).
 
-For a hosted setup, swap `makePostgresSink` for your own sink `(input) => Promise<void>` that POSTs to
-your collector. (A hosted ingestion API with adapter-signature auth is an M6 item — see
-`docs/THREAT_MODEL.md` T6.)
+For a hosted setup, swap `makePostgresSink` for your own sink `(input) => Promise<void>` that POSTs the
+built event to your collector.
+
+## 1b. Other frameworks (not Express)
+
+The capture core is framework-agnostic. To integrate FastAPI, Hono, Fastify, Go, etc., map your
+framework's request/response to a `LedgerlineCaptureInput` and persist it with `makePostgresSink` (or
+your own sink) — that is the whole adapter. `@ledgerline/express` is the ~40-line reference. See the
+[capture contract](../packages/seller-client/README.md#the-capture-contract). (Note: x402 has native
+Python/Go servers, but Circle Gateway Nanopayments is JS-first today — a native non-JS Circle path is
+unproven; an event-emitter or sidecar may be the faster route.)
 
 ## 2. Recognize — `raw_events` → revenue + double-entry ledger
 
@@ -97,7 +122,9 @@ pnpm export:csv                   # revenue_events.csv + ledger_entries.csv (fin
 
 The verifier re-derives every leaf from source, recomputes the Merkle root + batch_id, and checks the
 tie-outs, the previous-root chain, and (with `--onchain`) inclusion in the committed Arc root. The
-generated verifier package is a self-contained bundle a third party can check independently.
+generated verifier package is a self-contained bundle a third party can check independently. (Under
+Path C, verifier steps 1–3 are scoped to the receipt analog; M6c turns them into official-receipt
+checks.)
 
 ## End-to-end, one command
 
