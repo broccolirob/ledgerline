@@ -33,7 +33,7 @@ public, here.
 | Event signing (T6) | signing envelope + **local reference verifier** (the format + primitive) | **operated** tenant key registry, key rotation/revocation, tenant-scoped verification service |
 | Ingestion | local capture → local DB | hosted `POST /v1/events`, API keys, idempotency at scale |
 | Multi-tenancy | single-tenant local | tenant auth + isolation enforcement, audit logs, rate limits, dead-letter queues |
-| Privacy | field hashing + the `encrypted-metadata-v1` envelope **format** | operated KMS encryption + key custody |
+| Privacy | field hashing (shipped); the `encrypted-metadata-v1` envelope **format** is a *planned* OSS primitive, **not yet built** (§9; targeted with M7) | operated KMS encryption + key custody |
 | Surfaces | demo apps, CLIs, CSV export, integration guide | hosted dashboard, supplier/counterparty portal, accounting connectors |
 
 Rule of thumb: **publish the format, the primitive, and the reference implementation; keep the
@@ -46,7 +46,10 @@ operated service, the keys, and the customer data private.**
   and the integration guide. M6 publishes primitives, not operations.
 - **M7 (hosted ingestion + privacy envelope)** is the commercial boundary and lands in
   `ledgerline-cloud`: the operated ingestion API, API-key / tenant auth, KMS-backed encryption, and
-  the hosted views. M7 **consumes** the M6 public packages; it does not fork them.
+  the hosted views. M7 **consumes** the M6 public packages; it does not fork them. (Per the rule above,
+  the `encrypted-metadata-v1` envelope **format** is a public primitive — to be defined in this repo
+  when built; only the *operated* KMS encryption + key custody that uses it is commercial. Neither
+  exists yet.)
 
 ## Licensing
 

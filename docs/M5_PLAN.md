@@ -79,7 +79,8 @@ test. Auditor-credible honesty, not green-washing:
   envelope deferred), T6 (adapter signing schema-only, NOT verified server-side — headline M6 gap),
   T10 (committer = single EOA; `revokeRole` exists; KMS/multisig deferred), T12 (seller-reported units
   trusted in MVP).
-- DESIGNED-DEFERRED: T13 (SIWX schema only), T14 (Gateway reconciliation design only), T15 (P1/F2 race
+- DESIGNED-DEFERRED: T13 (SIWX design-only — no access_grants/access_events tables yet, only an unused
+  interactions.access_grant_id column), T14 (Gateway reconciliation design only), T15 (P1/F2 race
   — Invariant 10 gates on the deferred cash milestone; lock discipline documented).
 
 ### 3. Security test suite — `packages/*/test/*.security.test.ts` (§19)
