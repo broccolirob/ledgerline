@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { Pool } from 'pg';
-import { recognizeOne, runRecognitionPass, resolveDemoConfig, type RecognitionConfig } from '@ledgerline/recognition';
+import { recognizeOne, runRecognitionPass, resolveDemoConfig, type RecognitionConfig, type RawEventRow } from '@ledgerline/recognition';
+import { buildRawEventFromCapture } from '@ledgerline/seller-client';
+import { createReceiptIssuer, generateReceiptSigningKey, verifySignedOffer, verifySignedReceipt } from '@ledgerline/x402-receipts';
 import { setupDatabase, dropDatabase, makeRawEvent, insertRawEvent, TENANT } from './helpers';
 
 const TEST_DB = 'ledgerline_test_recognition';
@@ -67,6 +69,80 @@ describe('recognizeOne — happy path (R1′ principal_gross)', () => {
       expect(row.owner_type).toBe('supplier');
       expect(row.has_owner).toBe(true);
     }
+  });
+});
+
+describe('official x402 artifacts (Path B, M6c) — the recognition WRITE path', () => {
+  const NET = 'eip155:5042002';
+  const PAYTO = '0xb5e1ffa698b8458260Af9D6316971b83CD72a72C';
+  const RESOURCE = '/api/company-brief';
+
+  // Map a buildRawEventFromCapture output to a loaded RawEventRow, simulating the raw_events jsonb
+  // round-trip (JSON.parse(JSON.stringify(...)) drops `undefined` exactly as Postgres jsonb does).
+  // Uses recognizeOne (single event) rather than the global runRecognitionPass, so it does not pollute
+  // other tests' absolute summary counts.
+  function loadedRowFromCapture(c: Parameters<typeof buildRawEventFromCapture>[1]): RawEventRow {
+    const input = buildRawEventFromCapture(TENANT, c);
+    return {
+      id: input.id,
+      tenant_id: input.tenantId,
+      event_type: input.eventType,
+      event_source: input.eventSource,
+      occurred_at: input.occurredAt,
+      payload_redacted: JSON.parse(JSON.stringify(input.payloadRedacted)) as Record<string, unknown>,
+      event_seq: '1',
+    };
+  }
+
+  it('a capture carrying signed offer/receipt persists signed_offer + signed_receipt rows (artifact_json round-trips + EIP-712-verifies)', async () => {
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: NET });
+    const offer = await issuer.issueSignedOffer(RESOURCE, { network: NET, asset: 'USDC', payTo: PAYTO, amount: '3000' });
+    const receipt = await issuer.issueSignedReceipt(RESOURCE, '0x00000000000000000000000000000000000000a1', NET, 'official-1');
+    const ev = loadedRowFromCapture({
+      endpointId: 'company-brief-v1',
+      schemaVersion: 'm1.1',
+      method: 'POST',
+      resourcePath: RESOURCE,
+      payment: {
+        verified: true,
+        payer: '0x00000000000000000000000000000000000000a1',
+        amountAtomic: '3000',
+        network: NET,
+        asset: 'USDC',
+        payTo: PAYTO,
+        settlementReference: 'official-1',
+        paymentSignatureHeader: 'sig-official-1',
+      },
+      delivery: { status: 'delivered', httpStatus: 200, latencyMs: 1 },
+      signedOffer: offer,
+      signedReceipt: receipt,
+      occurredAt: new Date('2026-05-29T00:00:00.000Z'),
+    });
+    const res = await recognizeOne(pool, cfg, ev);
+    expect(res.outcome).toBe('recognized');
+
+    const arts = await pool.query<{ artifact_type: string; artifact_json: unknown }>(
+      `select artifact_type, artifact_json from x402_payment_artifacts where interaction_id=$1 order by artifact_type`,
+      [res.interactionId],
+    );
+    const byType = Object.fromEntries(arts.rows.map((r) => [r.artifact_type, r.artifact_json]));
+    // all three types written: the analog PLUS the two official artifacts
+    expect(Object.keys(byType).sort()).toEqual(['payment_signature', 'signed_offer', 'signed_receipt']);
+    // the analog row carries no json; the official rows carry the full signed artifact
+    expect(byType.signed_offer).toBeTruthy();
+    expect(byType.signed_receipt).toBeTruthy();
+    // survives the jsonb round-trip and still verifies as EIP-712
+    expect(await verifySignedOffer(byType.signed_offer)).not.toBeNull();
+    expect(await verifySignedReceipt(byType.signed_receipt)).not.toBeNull();
+  });
+
+  it('an analog-only capture writes ONLY the payment_signature artifact (backward-compat)', async () => {
+    const ev = makeRawEvent({ settlementReference: 'noofficial-1' });
+    const res = await recognizeOne(pool, cfg, ev);
+    expect(res.outcome).toBe('recognized');
+    expect(await count('x402_payment_artifacts', `where interaction_id='${res.interactionId}'`)).toBe(1);
+    const t = (await pool.query(`select artifact_type from x402_payment_artifacts where interaction_id='${res.interactionId}'`)).rows[0].artifact_type;
+    expect(t).toBe('payment_signature');
   });
 });
 

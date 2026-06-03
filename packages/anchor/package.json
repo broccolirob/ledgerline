@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@ledgerline/canonical": "workspace:*",
+    "@ledgerline/x402-receipts": "workspace:*",
     "pg": "^8.21.0",
     "viem": "^2.51.0"
   },

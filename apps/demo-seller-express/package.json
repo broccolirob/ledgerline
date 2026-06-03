@@ -11,6 +11,7 @@
   "dependencies": {
     "@ledgerline/express": "workspace:*",
     "@ledgerline/seller-client": "workspace:*",
+    "@ledgerline/x402-receipts": "workspace:*",
     "@circle-fin/x402-batching": "^3.0.4",
     "@x402/core": "^2.3.0",
     "@x402/evm": "^2.3.0",

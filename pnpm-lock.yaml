@@ -47,6 +47,9 @@ importers:
       '@ledgerline/seller-client':
         specifier: workspace:*
         version: link:../../packages/seller-client
+      '@ledgerline/x402-receipts':
+        specifier: workspace:*
+        version: link:../../packages/x402-receipts
       '@x402/core':
         specifier: ^2.3.0
         version: 2.13.0
@@ -103,6 +106,9 @@ importers:
       '@ledgerline/canonical':
         specifier: workspace:*
         version: link:../canonical
+      '@ledgerline/x402-receipts':
+        specifier: workspace:*
+        version: link:../x402-receipts
       pg:
         specifier: ^8.21.0
         version: 8.21.0
@@ -154,6 +160,9 @@ importers:
       '@ledgerline/seller-client':
         specifier: workspace:*
         version: link:../seller-client
+      '@ledgerline/x402-receipts':
+        specifier: workspace:*
+        version: link:../x402-receipts
       pg:
         specifier: ^8.21.0
         version: 8.21.0
@@ -167,6 +176,15 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+
+  packages/x402-receipts:
+    dependencies:
+      '@x402/extensions':
+        specifier: ^2.13.0
+        version: 2.13.0(typescript@5.9.3)
+      viem:
+        specifier: ^2.51.0
+        version: 2.51.3(typescript@5.9.3)(zod@3.25.76)
 
 packages:
 

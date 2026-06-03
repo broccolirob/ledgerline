@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@ledgerline/seller-client": "workspace:*",
+    "@ledgerline/x402-receipts": "workspace:*",
     "pg": "^8.21.0"
   },
   "devDependencies": {

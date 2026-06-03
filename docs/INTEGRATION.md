@@ -4,11 +4,14 @@ Goal: from a working x402 seller, start capturing finance-grade revenue records 
 flow is **capture → recognize → build → verify**. Capture is a drop-in middleware (Express today);
 the rest is a local pass over Postgres you run on your own cadence.
 
-> **Scope: Path C.** This is the **Ledgerline receipt analog** (request fingerprint + redacted payment
-> context + delivery record). It is not an official x402 Signed Receipt — that is the M6c milestone
-> (see `docs/M6_PLAN.md`, `DECISION_LOG.md` D-0001). This guide is the open-source, self-run path;
-> adapter-event signing + local verification are available (M6b — see *Sign your events*), while hosted
-> ingestion, API keys, and the operated key registry are commercial / M7 (see `COMMERCIAL_BOUNDARY.md`).
+> **Scope: Path C analog + optional Path B official artifacts.** The baseline capture is the
+> **Ledgerline receipt analog** (request fingerprint + redacted payment context + delivery record) — it
+> is not, by itself, an official x402 Signed Receipt. As of **M6c** you can ALSO issue + capture the
+> **official x402 EIP-712 Signed Offer/Receipt** alongside it (see *Issue official offers/receipts*;
+> `DECISION_LOG.md` D-0012), and the verifier re-verifies them. This guide is the open-source, self-run
+> path; adapter-event signing + local verification are available (M6b — see *Sign your events*), while
+> hosted ingestion, API keys, and the operated key registry are commercial / M7 (see
+> `COMMERCIAL_BOUNDARY.md`).
 
 ## 0. Prerequisites & install
 
@@ -100,6 +103,36 @@ unsigned, tampered, unknown-key, and revoked-key events are rejected with no rev
 leaves existing unsigned captures working. Rotate by re-running keygen; revoke with the SQL the CLI
 prints. The operated registry/rotation service is the M7 layer.
 
+## 1d. Issue official x402 offers/receipts (optional — M6c, Path B)
+
+Capture the **official x402 EIP-712 Signed Offer + Receipt** alongside the analog. The issuer is
+standalone — it runs **next to** Circle's middleware (approach B), which still owns the 402 +
+settlement. Generate a dedicated secp256k1 signing key (DISTINCT from your `payTo`; it only signs,
+never settles), put it in `RECEIPT_SIGNING_KEY`, and pass an `issueOfficialArtifacts` hook to the
+recorder. The demo wires this for you; the shape is:
+
+```ts
+import { createReceiptIssuer } from '@ledgerline/x402-receipts';
+
+const issuer = createReceiptIssuer({ privateKey: process.env.RECEIPT_SIGNING_KEY as `0x${string}`, network: 'eip155:5042002' });
+
+ledgerlineRecorder({
+  endpointId: 'company-brief-v1',
+  payTo: sellerAddress,
+  sink,
+  issueOfficialArtifacts: async (ctx) => ({
+    signedOffer: await issuer.issueSignedOffer(ctx.resourcePath, { network: ctx.network, asset: ctx.asset, payTo: ctx.payTo ?? sellerAddress, amount: ctx.amountAtomic }),
+    signedReceipt: await issuer.issueSignedReceipt(ctx.resourcePath, ctx.payer, ctx.network, ctx.settlementReference),
+  }),
+});
+```
+
+Recognition persists them (`x402_payment_artifacts.artifact_type` `signed_offer`/`signed_receipt` +
+`artifact_json`, migration 0007), and `pnpm verify` re-verifies them: step 2 checks the receipt's
+EIP-712 signature, step 3 binds receipt↔offer + the same issuer + `offer.amount == revenue gross`.
+Omit the hook and you stay on the analog (steps 2–3 → `na`). Generate a fresh key offline with
+`generateReceiptSigningKey()` from `@ledgerline/x402-receipts`.
+
 ## 2. Recognize — `raw_events` → revenue + double-entry ledger
 
 Run the recognition pass (a CLI, or call `runRecognitionPass` directly). It is idempotent and
@@ -140,9 +173,10 @@ pnpm export:csv                   # revenue_events.csv + ledger_entries.csv (fin
 
 The verifier re-derives every leaf from source, recomputes the Merkle root + batch_id, and checks the
 tie-outs, the previous-root chain, and (with `--onchain`) inclusion in the committed Arc root. The
-generated verifier package is a self-contained bundle a third party can check independently. (Under
-Path C, verifier steps 1–3 are scoped to the receipt analog; M6c turns them into official-receipt
-checks.)
+generated verifier package is a self-contained bundle a third party can check independently. Steps
+1–3 verify the **official x402 Signed Offer/Receipt** when present (EIP-712 signature + receipt↔offer
+bind + amount tie-out, M6c); on an analog-only interaction they report the **receipt analog** honestly
+(steps 2–3 → `na`).
 
 ## End-to-end, one command
 

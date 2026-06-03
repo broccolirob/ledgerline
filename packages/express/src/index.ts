@@ -13,6 +13,25 @@ interface CircleReqPayment {
   transaction?: string;
 }
 
+/** Context for the optional official-artifact issuer (M6c, Path B). Derived from the confirmed
+ *  req.payment + request, so the demo can issue the EIP-712 offer/receipt WITHOUT this package
+ *  depending on x402 — the issuer closure is injected (see @ledgerline/x402-receipts). */
+export interface OfficialArtifactContext {
+  resourcePath: string;
+  network: string;
+  asset: string;
+  amountAtomic: string;
+  payTo?: string;
+  payer: string;
+  settlementReference?: string;
+}
+
+/** The official x402 EIP-712 artifacts to capture alongside the analog. Either may be omitted. */
+export interface OfficialArtifacts {
+  signedOffer?: unknown;
+  signedReceipt?: unknown;
+}
+
 export interface LedgerlineExpressOptions {
   endpointId: string;
   schemaVersion?: string;
@@ -21,6 +40,11 @@ export interface LedgerlineExpressOptions {
   payTo?: string;
   /** Where captured analogs go: a local Postgres sink (demo) or a hosted-API POST (prod). */
   sink: (input: LedgerlineCaptureInput) => void | Promise<void>;
+  /** Optional (M6c, Path B): issue the OFFICIAL x402 EIP-712 offer/receipt to capture ALONGSIDE the
+   *  analog. Called only on a delivered (2xx) paid response. Injected as a hook so THIS package keeps
+   *  no x402 dependency; the demo supplies it via @ledgerline/x402-receipts. Issuance failures are
+   *  logged and swallowed — they never block the response (already finished) nor lose the analog. */
+  issueOfficialArtifacts?: (ctx: OfficialArtifactContext) => OfficialArtifacts | Promise<OfficialArtifacts>;
 }
 
 /**
@@ -36,43 +60,62 @@ export function ledgerlineRecorder(opts: LedgerlineExpressOptions): RequestHandl
   return (req, res, next) => {
     const startedAt = Date.now();
     res.on('finish', () => {
-      try {
-        const payment = (req as unknown as { payment?: CircleReqPayment }).payment;
-        if (!payment) return; // unpaid / free path — nothing to capture
-        const httpStatus = res.statusCode;
-        const sigHeader = req.headers['payment-signature'];
-        const input: LedgerlineCaptureInput = {
-          endpointId: opts.endpointId,
-          schemaVersion: opts.schemaVersion ?? 'm1.1',
-          method: req.method,
-          resourcePath: req.path,
-          routeConfigVersion: opts.routeConfigVersion,
-          payment: {
-            verified: Boolean(payment.verified),
-            payer: payment.payer,
-            amountAtomic: payment.amount,
-            network: payment.network,
-            asset: 'USDC',
-            payTo: opts.payTo,
-            settlementReference: payment.transaction,
-            paymentSignatureHeader: typeof sigHeader === 'string' ? sigHeader : undefined,
-          },
-          delivery: {
-            status: httpStatus >= 200 && httpStatus < 300 ? 'delivered' : 'failed',
-            httpStatus,
-            latencyMs: Date.now() - startedAt,
-          },
-          occurredAt: new Date(),
-        };
-        const maybe = opts.sink(input);
-        if (maybe instanceof Promise) {
-          maybe.catch((e: unknown) =>
-            console.error('[ledgerline] sink error (response unaffected):', e),
-          );
+      // Run the whole capture (incl. optional official-artifact issuance) OFF the response path. The
+      // response has finished, so awaiting here cannot affect it; every error is logged, never thrown.
+      void (async () => {
+        try {
+          const payment = (req as unknown as { payment?: CircleReqPayment }).payment;
+          if (!payment) return; // unpaid / free path — nothing to capture
+          const httpStatus = res.statusCode;
+          const delivered = httpStatus >= 200 && httpStatus < 300;
+          const sigHeader = req.headers['payment-signature'];
+          const input: LedgerlineCaptureInput = {
+            endpointId: opts.endpointId,
+            schemaVersion: opts.schemaVersion ?? 'm1.1',
+            method: req.method,
+            resourcePath: req.path,
+            routeConfigVersion: opts.routeConfigVersion,
+            payment: {
+              verified: Boolean(payment.verified),
+              payer: payment.payer,
+              amountAtomic: payment.amount,
+              network: payment.network,
+              asset: 'USDC',
+              payTo: opts.payTo,
+              settlementReference: payment.transaction,
+              paymentSignatureHeader: typeof sigHeader === 'string' ? sigHeader : undefined,
+            },
+            delivery: {
+              status: delivered ? 'delivered' : 'failed',
+              httpStatus,
+              latencyMs: Date.now() - startedAt,
+            },
+            occurredAt: new Date(),
+          };
+          // M6c (Path B): issue the official EIP-712 offer/receipt for a DELIVERED paid call only (a
+          // failed/non-2xx delivery has no receipt). A failure here must not lose the analog.
+          if (delivered && opts.issueOfficialArtifacts) {
+            try {
+              const arts = await opts.issueOfficialArtifacts({
+                resourcePath: input.resourcePath,
+                network: input.payment.network,
+                asset: input.payment.asset ?? 'USDC',
+                amountAtomic: input.payment.amountAtomic,
+                payTo: input.payment.payTo,
+                payer: input.payment.payer,
+                settlementReference: input.payment.settlementReference,
+              });
+              input.signedOffer = arts.signedOffer;
+              input.signedReceipt = arts.signedReceipt;
+            } catch (e) {
+              console.error('[ledgerline] official-artifact issuance failed (analog still captured):', e);
+            }
+          }
+          await opts.sink(input);
+        } catch (e) {
+          console.error('[ledgerline] capture error (response unaffected):', e);
         }
-      } catch (e) {
-        console.error('[ledgerline] capture error (response unaffected):', e);
-      }
+      })();
     });
     next();
   };

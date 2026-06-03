@@ -15,6 +15,8 @@ import type { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 // Type-only re-use of the seller-client `Db` seam (pg Pool | PoolClient); erased at runtime.
 import { verifyRawEventSignature, type Db } from '@ledgerline/seller-client';
+// M6c (Path B): hash the official x402 artifacts for x402_payment_artifacts.artifact_hash (bytea).
+import { offerReceiptArtifactHash } from '@ledgerline/x402-receipts';
 
 export type { Db };
 
@@ -78,6 +80,10 @@ export interface ParsedReceipt {
   responseBodyHashHex?: string;
   latencyMs?: number;
   occurredAt: Date;
+  // M6c (Path B): the OFFICIAL x402 EIP-712 artifacts, if the capture carried them (payloadRedacted
+  // .x402Official). Stored verbatim so the verifier can re-verify the EIP-712 signatures offline.
+  signedOffer?: unknown;
+  signedReceipt?: unknown;
 }
 
 /** A split_rules row as read from the DB (percentage_bps is int → number; amounts → string). */
@@ -200,6 +206,12 @@ export function parseReceipt(rawEvent: RawEventRow): ParsedReceipt {
     throw new Error(`parseReceipt: unexpected delivery.status "${statusRaw}"`);
   }
 
+  // M6c: lift the official artifacts if present (stored as { signedOffer, signedReceipt }, each
+  // possibly null). Left as opaque JSON here; the verifier (not recognition) re-verifies EIP-712.
+  const official = p.x402Official && typeof p.x402Official === 'object' ? (p.x402Official as Record<string, unknown>) : undefined;
+  const signedOffer = official?.signedOffer ?? undefined;
+  const signedReceipt = official?.signedReceipt ?? undefined;
+
   return {
     rawEventId: rawEvent.id,
     idempotencyAnchor: settlementReference ?? paymentSignatureHashHex ?? requestFingerprintHex,
@@ -217,6 +229,8 @@ export function parseReceipt(rawEvent: RawEventRow): ParsedReceipt {
     responseBodyHashHex: optString(del.responseBodyHash),
     latencyMs: typeof del.latencyMs === 'number' ? del.latencyMs : undefined,
     occurredAt: rawEvent.occurred_at,
+    signedOffer: signedOffer ?? undefined,
+    signedReceipt: signedReceipt ?? undefined,
   };
 }
 
@@ -653,6 +667,40 @@ async function recognizeOnClient(
       `recognizeOne: fresh interaction ${interactionId} but payment artifact_hash ${artifactHashHex} ` +
         `already exists under another interaction — cross-key collision (paymentSignatureHash reused ` +
         `across distinct settlementReferences)`,
+    );
+  }
+
+  // 2b. M6c (Path B): persist the OFFICIAL x402 EIP-712 artifacts ALONGSIDE the analog when the
+  // capture carried them. artifact_json is the source of truth the verifier re-verifies (EIP-712).
+  // These are SUPPLEMENTARY (the payment_signature row above stays the load-bearing money artifact),
+  // so a hash collision is a harmless no-op, not a fatal invariant. Reached only on fresh
+  // interactions (replays returned early above), so no double-insert.
+  for (const [artifactType, artifact] of [
+    ['signed_offer', r.signedOffer],
+    ['signed_receipt', r.signedReceipt],
+  ] as const) {
+    if (artifact == null) continue;
+    await client.query(
+      `insert into x402_payment_artifacts
+         (id, tenant_id, interaction_id, artifact_type, artifact_hash, artifact_json, network, asset,
+          amount_atomic, pay_to_address, payment_identifier, settlement_reference, issued_at)
+       values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13)
+       on conflict (tenant_id, artifact_type, artifact_hash) do nothing`,
+      [
+        randomUUID(),
+        cfg.tenantId,
+        interactionId,
+        artifactType,
+        offerReceiptArtifactHash(artifact),
+        JSON.stringify(artifact),
+        r.network,
+        r.asset,
+        r.amountAtomic.toString(),
+        r.payTo ?? null,
+        r.idempotencyAnchor,
+        r.settlementReference ?? null,
+        r.occurredAt,
+      ],
     );
   }
 

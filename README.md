@@ -11,13 +11,18 @@ and commit a tamper-evident Merkle root to Arc that anyone can independently ver
 > **on-chain** (`RevenueBatchAnchor` at `0x3Bd5966789CA3F00ecB25D262099c9DDE0e90EC4`, chain 5042002;
 > batch #1 committed in tx `0x7ee7c6a74bb491eab3da395813661925976316613c959aceb7cad5170d06233a`). An
 > independent verifier proves a revenue event is in that on-chain root — every applicable check
-> passes (steps 2–3 are N/A under Path C: there's no official signed receipt to validate). Run it
-> with **`pnpm demo`**.
+> passes (in the default Path-C run, steps 2–3 are N/A — no official signed receipt; **M6c** makes them
+> real when official receipts are issued). Run it with **`pnpm demo`**.
 >
-> **No-overclaim:** the demo ships on **Path C** — a *Ledgerline receipt analog* (request fingerprint +
-> redacted payment context + delivery record), **not** an official x402 *signed receipt*. The official
-> artifact (Path B) is spike-proven achievable and is the next receipt milestone (`DECISION_LOG.md`
-> D-0001). See `docs/THREAT_MODEL.md` for an honest T1–T16 status, including what is deferred.
+> **No-overclaim:** the default demo run ships on **Path C** — a *Ledgerline receipt analog* (request
+> fingerprint + redacted payment context + delivery record), **not** an official x402 *signed receipt*.
+> **M6c** adds optional capture + verification of the **official x402 EIP-712 signed offer/receipt**
+> (Path B): set `RECEIPT_SIGNING_KEY` and verifier steps 1–3 check the real artifact's signature,
+> offer↔receipt bind, and amount tie-out. The claim is precise: *official x402 signed offer/receipt
+> captured and verified; signer registry pinning deferred to M7* — M6c proves the artifacts are
+> signature-valid + internally consistent and bind to the revenue event, but does **not** pin the signer
+> to a *registered* seller key. See `DECISION_LOG.md` D-0001/D-0012 and `docs/THREAT_MODEL.md` for the
+> honest T1–T16 status.
 
 ## The pipeline (demo §21, end to end)
 
@@ -82,10 +87,11 @@ secrets**. Live payment needs Arc Testnet buyer creds; live anchoring needs `ARC
 
 ## What's deferred (honestly)
 
-Hosted ingestion API + API-key management + adapter-event signature verification + the §9 encryption
-envelope (M6+); the dashboard UI (CSV is the MVP substitute); SIWX repeat-access, Gateway transfer
-reconciliation, cash collection / refund reversals; and official x402 signed receipts (Path B). See
-`docs/THREAT_MODEL.md` and `DECISION_LOG.md`.
+Hosted ingestion API + API-key management + the §9 encryption envelope (M6+); the dashboard UI (CSV is
+the MVP substitute); SIWX repeat-access, Gateway transfer reconciliation, cash collection / refund
+reversals. Official x402 signed offer/receipt capture + verification (Path B) is **implemented in M6c**,
+but pinning the recovered signer to a *registered* seller key (the operated receipt-key registry) is
+deferred to **M7**. See `docs/THREAT_MODEL.md` and `DECISION_LOG.md` (D-0012).
 
 ## License
 

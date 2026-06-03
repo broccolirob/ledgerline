@@ -220,6 +220,13 @@ export interface LedgerlineCaptureInput {
     latencyMs?: number;
     responseBodyHash?: string;
   };
+  // M6c (Path B): the OFFICIAL x402 EIP-712 artifacts issued for this paid call, if any. Stored
+  // verbatim under payloadRedacted.x402Official so the verifier can re-verify their EIP-712 signatures
+  // offline. Either may be absent (backward-compatible: analog-only captures omit them). NOTE: the
+  // receipt's `payer` is, by x402 spec, the buyer's address — so unlike the analog (which hashes the
+  // payer) these artifacts carry it in the clear; at-rest encryption is deferred to M7 / §9.
+  signedOffer?: unknown;
+  signedReceipt?: unknown;
   occurredAt: Date;
 }
 
@@ -246,6 +253,14 @@ export function buildRawEventFromCapture(tenantId: string, c: LedgerlineCaptureI
   // same request would collide, so only used if neither unique signal is present).
   const anchor = c.payment.settlementReference ?? paymentSignatureHash ?? fingerprint;
 
+  // M6c: carry the official artifacts verbatim when present. undefined here is dropped by the
+  // JSON normalization in writeRawEvent, so analog-only captures store no x402Official key (and the
+  // canonical_hash / adapter signature stay identical to pre-M6c for unchanged inputs).
+  const officialArtifacts =
+    c.signedOffer != null || c.signedReceipt != null
+      ? { signedOffer: c.signedOffer ?? null, signedReceipt: c.signedReceipt ?? null }
+      : undefined;
+
   const payloadRedacted: Record<string, unknown> = {
     schemaVersion: c.schemaVersion,
     kind: 'ledgerline_receipt_analog', // NOT a signed receipt (no-overclaim)
@@ -269,6 +284,7 @@ export function buildRawEventFromCapture(tenantId: string, c: LedgerlineCaptureI
       latencyMs: c.delivery.latencyMs,
       responseBodyHash: c.delivery.responseBodyHash,
     },
+    x402Official: officialArtifacts, // dropped when undefined (analog-only) — see note above
   };
 
   return {
