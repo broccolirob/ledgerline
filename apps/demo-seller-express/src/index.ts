@@ -40,7 +40,10 @@ if (!sellerAddress) {
   // Local Postgres sink: each delivered paid call writes ONE raw_event (the Ledgerline receipt
   // analog). The pool is lazy — it only connects on the first capture.
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
-  const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
+  // `|| undefined` so a set-but-EMPTY env var falls back to the demo tenant (bare `??` only catches
+  // undefined; an empty string would bind '' into a uuid NOT NULL column and the capture would silently
+  // fail in res.finish). Mirrors the guard at the 7 other tenant read sites (D-0010/M5 fix).
+  const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
   // M6b (optional): sign captured events when an adapter key is configured (`pnpm adapter:keygen`).
   // Unsigned by default; recognition only ENFORCES signatures when requireAdapterSignature is set.
   const hasKey = Boolean(process.env.ADAPTER_SIGNING_KEY);
@@ -63,6 +66,10 @@ if (!sellerAddress) {
   // RECEIPT_SIGNING_KEY is a secp256k1 EOA key DISTINCT from the seller's receive address (spec
   // requirement); it only SIGNS offers/receipts and never settles. No key -> analog-only (unchanged).
   const NETWORK = 'eip155:5042002';
+  // The official x402 OfferPayload.asset is a TOKEN CONTRACT ADDRESS (or 'native'), NOT a human label —
+  // so the Path-B offer must carry the USDC contract address, not the 'USDC' label the analog/ledger
+  // path uses. (Arc Testnet USDC; override with USDC_CONTRACT if it changes.)
+  const USDC_ASSET = process.env.USDC_CONTRACT ?? '0x3600000000000000000000000000000000000000';
   let receiptIssuer: ReceiptIssuer | undefined;
   if (process.env.RECEIPT_SIGNING_KEY) {
     receiptIssuer = createReceiptIssuer({
@@ -96,7 +103,7 @@ if (!sellerAddress) {
             issueOfficialArtifacts: async (ctx) => ({
               signedOffer: await receiptIssuer!.issueSignedOffer(ctx.resourcePath, {
                 network: ctx.network,
-                asset: ctx.asset,
+                asset: USDC_ASSET, // token CONTRACT address (spec), not the 'USDC' analog label in ctx.asset
                 payTo: ctx.payTo ?? sellerAddress,
                 amount: ctx.amountAtomic,
               }),

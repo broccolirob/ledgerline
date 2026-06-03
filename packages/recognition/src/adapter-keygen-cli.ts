@@ -23,6 +23,7 @@ async function main(): Promise<void> {
       // ON CONFLICT DO NOTHING hit: key_id already exists. Do NOT print the private key as trusted —
       // the registry would never verify against it. (Astronomically rare with a fresh random keypair.)
       console.error(`[adapter:keygen] key_id ${keyId} already exists for tenant ${tenantId} — nothing registered; re-run for a fresh key.`);
+      process.exitCode = 1; // make the (cryptographically unreachable) collision detectable by a wrapping script
       return;
     }
     console.log(`[adapter:keygen] registered an active Ed25519 key for tenant ${tenantId}`);

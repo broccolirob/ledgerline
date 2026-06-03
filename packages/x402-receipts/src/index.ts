@@ -84,7 +84,15 @@ function isEip712Offer(v: unknown): v is EIP712SignedOffer {
   return isObject(v) && v.format === 'eip712' && isObject(v.payload) && typeof v.signature === 'string';
 }
 function isEip712Receipt(v: unknown): v is EIP712SignedReceipt {
-  return isObject(v) && v.format === 'eip712' && isObject(v.payload) && typeof v.signature === 'string';
+  // Require payer:string too — the SDK's verifyReceiptMatchesOffer does `payload.payer.toLowerCase()`,
+  // which throws on a missing/non-string payer. Guarding it here keeps the trust boundary throw-free.
+  return (
+    isObject(v) &&
+    v.format === 'eip712' &&
+    isObject(v.payload) &&
+    typeof v.payload.payer === 'string' &&
+    typeof v.signature === 'string'
+  );
 }
 
 /**
@@ -171,7 +179,13 @@ export function receiptMatchesOffer(receipt: unknown, offer: unknown): boolean {
     acceptIndex: offer.acceptIndex,
   };
   // payerAddresses = the receipt's own payer (so the payer check reduces to the resource+network bind).
-  return verifyReceiptMatchesOffer(receipt, decoded, [receipt.payload.payer], Number.MAX_SAFE_INTEGER);
+  // try/catch so a malformed-but-shape-valid payload (read back from jsonb) yields `false`, never a
+  // throw that would crash the verifier (the SDK matcher does unguarded field access internally).
+  try {
+    return verifyReceiptMatchesOffer(receipt, decoded, [receipt.payload.payer], Number.MAX_SAFE_INTEGER);
+  } catch {
+    return false;
+  }
 }
 
 /**

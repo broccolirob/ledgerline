@@ -251,6 +251,22 @@ The deferred Path-B receipt milestone (D-0001) is now built — the demo capture
   demo throws (not warns) when `RECEIPT_SIGNING_KEY == payTo`; step 2/3 copy is honest that issuer
   identity is not yet registry-pinned. Added regression tests (lone-receipt fails) + a recognition
   WRITE-path round-trip test (the capture→jsonb→recognize artifact path was previously untested).
+- **Ultrareview hardening (2026-06-03):** a cloud review crashed at its dedup stage but had already
+  surfaced 9 findings; triaged each with 9 parallel verifiers against the pushed code. 6 were real and
+  unfixed and are now fixed: (1) the official offer carried `asset='USDC'` (a label) instead of the USDC
+  token CONTRACT address — the demo now passes the contract address (`USDC_CONTRACT` overridable);
+  (2) `verify()` could CRASH on a receipt whose payload lacked `payer` (the SDK matcher does
+  `payer.toLowerCase()`) — `isEip712Receipt` now requires `payer:string` and `receiptMatchesOffer` is
+  try/caught; (3) empty `LEDGERLINE_TENANT_ID` bypassed the demo-seller fallback (`|| undefined` guard
+  added); (4) `generateVerifierPackage`'s note claimed "official … re-verifiable" on ROW PRESENCE, not
+  validity — now gated on verifier steps 2+3 passing (the same overclaim the `/review` fixed in
+  `verify()` but missed here); (5) `recognize` CLI exited 0 when every event was `rejected_unsigned` —
+  now exits 2 + logs under enforcement; (6) `makePostgresSink`'s boot probe didn't check `ADAPTER_KEY_ID`
+  matches the private key (a mismatch would sign with the wrong keyId → silent recognition rejection) —
+  now derives + compares. 2 findings were not real-new: the keygen "silent collision" (false — loud
+  stderr + 2⁻¹²⁸ unreachable; added a cosmetic exit code) and the same-second offer-dedup edge (already
+  D-0012 above; corrected an understated code comment). Regression tests added for #2/#4(via existing)/#6
+  and a verifier-package no-overclaim test.
 - **Signer-registry pinning → M7 (founder decision at `/review`, 2026-06-02).** The canonical M6c claim
   is exactly: **"official x402 signed offer/receipt captured and verified; signer registry pinning
   deferred to M7."** The verifier checks an internally-consistent offer+receipt pair (same recovered
@@ -273,7 +289,8 @@ The deferred Path-B receipt milestone (D-0001) is now built — the demo capture
   Track-A-gated, like the rest of the live demo; the offline issue→capture→verify→tamper path is fully
   tested. Committing artifact hashes on-chain + hosted ingestion of official artifacts are M7/private.
 
-Verified: typecheck 11/11, vitest 183/183 (incl. 14 `x402-receipts` + anchor official-artifact /
-tamper / lone-receipt / backward-compat + recognition write-path tests), `pnpm test:security` 44/44,
+Verified: typecheck 11/11, vitest 186/186 (incl. 14 `x402-receipts` + anchor official-artifact /
+tamper / lone-receipt / malformed-receipt-no-crash / package-no-overclaim + recognition write-path
+tests), `pnpm test:security` 45/45 (incl. the keyId-mismatch boot check),
 `pnpm vectors:check` OK (frozen leaves unchanged), `pnpm contracts:test` 13/13, migration 0007 applies
 via the throwaway-DB harness.

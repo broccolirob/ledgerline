@@ -185,6 +185,42 @@ describe('verify (§17.6 14-step, Path-C re-scoped)', () => {
     expect(res.pass).toBe(false);
   });
 
+  it('a malformed official receipt (payload missing payer) does NOT crash verify() — steps 2/3 fail cleanly', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    // A receipt that passes a naive envelope check but whose payload has NO payer — the SDK matcher does
+    // payload.payer.toLowerCase(), which threw and crashed the whole verifier before the guard/try-catch.
+    const malformedReceipt = { format: 'eip712', signature: '0xdeadbeef', payload: { version: 1, network: ARC_NET, resourceUrl: SEED_RESOURCE, issuedAt: 1717200000 } };
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', malformedReceipt);
+
+    const res = await verify(pool, reId!); // must NOT throw
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(byN[2]!.status).toBe('fail'); // invalid receipt
+    expect(byN[3]!.status).toBe('fail'); // cannot bind
+    expect(res.pass).toBe(false);
+  });
+
+  it('verifier package does NOT overclaim "official … re-verifiable" when the receipt signature is invalid', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    const validReceipt = await issuer.issueSignedReceipt(SEED_RESOURCE, '0x00000000000000000000000000000000000000a1', ARC_NET, ix.payment_identifier);
+    const brokenReceipt = { ...validReceipt, signature: '0xdeadbeef' }; // shape-valid but signature won't verify
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', brokenReceipt);
+
+    const pkg = await generateVerifierPackage(pool, reId!);
+    expect(pkg.generatedNote).not.toMatch(/official x402.*captured \+ re-verifiable/i); // no overclaim on an invalid receipt
+    expect(pkg.generatedNote).toMatch(/receipt analog/i); // honest fallback note
+    expect(pkg.verification.pass).toBe(false); // step 2 fails on the broken signature
+  });
+
   it('analog-only interaction still passes step 1 (Path C) with steps 2-3 na (backward-compat)', async () => {
     const [reId] = await seedRecognized(pool, 1);
     await buildBatch(pool, TENANT);

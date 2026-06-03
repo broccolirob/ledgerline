@@ -673,8 +673,12 @@ async function recognizeOnClient(
   // 2b. M6c (Path B): persist the OFFICIAL x402 EIP-712 artifacts ALONGSIDE the analog when the
   // capture carried them. artifact_json is the source of truth the verifier re-verifies (EIP-712).
   // These are SUPPLEMENTARY (the payment_signature row above stays the load-bearing money artifact),
-  // so a hash collision is a harmless no-op, not a fatal invariant. Reached only on fresh
-  // interactions (replays returned early above), so no double-insert.
+  // so an artifact_hash conflict is a no-op (on conflict do nothing), not a fatal invariant. Reached
+  // only on fresh interactions (replays returned early above), so no double-insert. KNOWN EDGE
+  // (DECISION_LOG D-0012): two distinct same-second identical-terms calls produce a byte-identical
+  // signed_offer, so the global unique(tenant,artifact_type,artifact_hash) keeps only the first and the
+  // second interaction's offer is dropped (its verify step 3 then fails — not a silent harmless no-op).
+  // Cannot fire in the sequential demo; fixed by per-interaction uniqueness when concurrency lands.
   for (const [artifactType, artifact] of [
     ['signed_offer', r.signedOffer],
     ['signed_receipt', r.signedReceipt],

@@ -1,7 +1,7 @@
 // @ledgerline/seller-client — Milestone 1.
 // Framework-agnostic seller-side capture: request fingerprinting (§8), the Ledgerline
 // receipt analog (Path C), the raw_events write path, and the demo split helper.
-import { createHash, randomUUID, generateKeyPairSync, sign as edSign, verify as edVerify } from 'node:crypto';
+import { createHash, randomUUID, generateKeyPairSync, createPublicKey, sign as edSign, verify as edVerify } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 /** Minimal pg seam — satisfied by both `pg.Pool` and `pg.PoolClient`. */
@@ -315,6 +315,21 @@ export function makePostgresSink(
         `makePostgresSink: invalid adapter signing key (ADAPTER_SIGNING_KEY must be a valid Ed25519 PEM): ${
           e instanceof Error ? e.message : String(e)
         }`,
+      );
+    }
+    // The key is a valid Ed25519 PEM; now ensure the configured keyId actually corresponds to it.
+    // ADAPTER_KEY_ID and ADAPTER_SIGNING_KEY are independent env vars, so a mismatched pair would
+    // otherwise boot fine, stamp the WRONG keyId on every signed event, and be silently rejected at
+    // recognition (the adapter_keys registry can't resolve that keyId) — a delivered-and-charged event
+    // lost. Derive the keyId the same way generateAdapterKeyPair does and require it to match.
+    const derivedKeyId = createHash('sha256')
+      .update(createPublicKey(opts.signer.privateKeyPem).export({ type: 'spki', format: 'pem' }).toString())
+      .digest('hex')
+      .slice(0, 32);
+    if (derivedKeyId !== opts.signer.keyId) {
+      throw new Error(
+        `makePostgresSink: ADAPTER_KEY_ID (${opts.signer.keyId}) does not match the public key derived ` +
+          `from ADAPTER_SIGNING_KEY (expected ${derivedKeyId}) — signed events would be rejected by recognition`,
       );
     }
   }

@@ -22,6 +22,16 @@ async function main(): Promise<void> {
       console.error(`[recognize] ${summary.errors.length} event(s) errored — see summary.errors`);
       process.exitCode = 1;
     }
+    // T6 enforcement: rejected-unsigned events are NOT "errors", so they wouldn't otherwise surface in
+    // the exit code — a cron/CI job (and the operator) would read exit 0 = success even though every
+    // event was dropped with no revenue. Signal it with a DISTINCT non-zero code (2), keeping true
+    // errors (1) distinguishable from policy rejections.
+    if (cfg.requireAdapterSignature && summary.rejectedUnsigned > 0) {
+      console.error(
+        `[recognize] ${summary.rejectedUnsigned} event(s) REJECTED for adapter-signature failure — no revenue recognized for them (enforcement is ON)`,
+      );
+      if (process.exitCode !== 1) process.exitCode = 2;
+    }
   } finally {
     await pool.end();
   }

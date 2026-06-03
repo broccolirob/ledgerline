@@ -288,6 +288,13 @@ describe('M6b — makePostgresSink fails fast on a malformed signing key (no sil
       makePostgresSink({} as never, { tenantId: TENANT, signer: { keyId: kp.keyId, privateKeyPem: kp.privateKeyPem } }),
     ).not.toThrow();
   });
+  it('throws when ADAPTER_KEY_ID does not match the private key (else events would be silently rejected)', () => {
+    const a = generateAdapterKeyPair();
+    const b = generateAdapterKeyPair(); // a different key's id paired with a's private key
+    expect(() =>
+      makePostgresSink({} as never, { tenantId: TENANT, signer: { keyId: b.keyId, privateKeyPem: a.privateKeyPem } }),
+    ).toThrow(/does not match/i);
+  });
 });
 
 describe('T6 — a signed event survives the DB round-trip (jsonb/text) and verifies', () => {
