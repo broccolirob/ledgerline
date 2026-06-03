@@ -208,3 +208,89 @@ the demo re-exercised and confirmed it.)
 
 Verified: typecheck 9/9, vitest 156/156 (118 + 38 security), forge 13/13, vectors OK, `pnpm demo`
 PASS anchor-verified.
+
+## D-0012 — Milestone 6c: official x402 Signed Offer/Receipt implemented, Path B (decided 2026-06-02)
+
+The deferred Path-B receipt milestone (D-0001) is now built — the demo captures + verifies the
+**official x402 EIP-712 Signed Offer & Receipt** alongside the Path-C analog. Closes T4 offline.
+
+- **Approach B (founder-chosen): alongside Circle's middleware.** `createGatewayMiddleware` still owns
+  the 402 + Gateway settlement (the working live-on-Arc money path is untouched). A parallel issuer
+  produces the official signed offer (at request terms) + signed receipt (on 2xx, bound to
+  `req.payment.transaction`). Copy never claims Circle delivers the offer in its 402.
+- **The issuer is STANDALONE → the D-0001 type-skew is moot here.** `createEIP712OfferReceiptIssuer().
+  issueOffer()/issueReceipt()` only sign payloads; they need no `x402ResourceServer` /
+  `BatchFacilitatorClient` / `GatewayEvmScheme`. The spike registered the extension on a ResourceServer
+  *only to prove it composes with Circle's facilitator*; the production capture path never does, so the
+  `@x402/core`↔`@circle-fin/x402-batching` skew never arises and `@ledgerline/x402-receipts` carries
+  **no `as unknown` casts** (one documented cast bridges viem's stricter `signTypedData` to the SDK's
+  `SignTypedDataFn`). The D-0001 "pin `@x402/core`" wrinkle is therefore **not needed** for B.
+- **New OSS package `@ledgerline/x402-receipts`** isolates the x402 deps (`@x402/extensions` + `viem`):
+  `createReceiptIssuer` / `generateReceiptSigningKey` / `verifySignedOffer` / `verifySignedReceipt` /
+  `receiptMatchesOffer` / `offerReceiptArtifactHash`. Dedicated secp256k1 signing key
+  (`RECEIPT_SIGNING_KEY`), distinct from `payTo` (spec requirement; T10).
+- **Frozen Arc leaf format UNCHANGED (load-bearing).** The §17.5 LCJ vectors + every committed root
+  stay frozen. M6c adds **no** artifact leaf and does not touch the revenue_event/ledger_entry leaves;
+  the official artifacts are verified **cryptographically** (EIP-712, verifier steps 2–3) while the
+  `revenue_event` they produced remains Arc-committed (steps 0/13). Committing artifact hashes as a new
+  leaf type is a deferred canonical extension (would invalidate the frozen roots). `pnpm vectors:check`
+  still OK.
+- **Verifier un-rescoped (`anchor/src/index.ts` steps 1–3).** Step 1 prefers `signed_receipt` (official)
+  → else `payment_signature` (analog, honest); step 2 verifies the receipt's EIP-712 signature; step 3
+  binds receipt↔offer + same-issuer + `offer.amount == revenue gross`. Analog-only → steps 2–3 `na`
+  (backward-compatible). The "NOT official" hedge is dropped ONLY where the official artifact verifies.
+- **Persistence:** migration `0007` adds `artifact_json jsonb` (the source of truth for offline
+  re-verification) + the `artifact_type` CHECK (`signed_offer|payment_signature|signed_receipt`).
+  Artifacts are NOT Arc-committed; §9 at-rest encryption of `artifact_json` (which by spec carries the
+  receipt's `payer`) is deferred to M7.
+- **Review hardening (`/review`, 2026-06-02):** two independent adversarial reviewers converged on a
+  real gap — the verifier proved "EIP-712 recovers a signer" without anchoring it, so a *lone* tampered
+  receipt (no offer → step 3 was `na`, and `na` doesn't fail) passed the whole checklist, and a
+  present-but-invalid receipt still earned the "official" label. Fixed: step 1's official label now
+  requires a valid signature; an official receipt WITHOUT its offer now FAILS step 3 (not `na`); the
+  demo throws (not warns) when `RECEIPT_SIGNING_KEY == payTo`; step 2/3 copy is honest that issuer
+  identity is not yet registry-pinned. Added regression tests (lone-receipt fails) + a recognition
+  WRITE-path round-trip test (the capture→jsonb→recognize artifact path was previously untested).
+- **Ultrareview hardening (2026-06-03):** a cloud review crashed at its dedup stage but had already
+  surfaced 9 findings; triaged each with 9 parallel verifiers against the pushed code. 6 were real and
+  unfixed and are now fixed: (1) the official offer carried `asset='USDC'` (a label) instead of the USDC
+  token CONTRACT address — the demo now passes the contract address (`USDC_CONTRACT` overridable);
+  (2) `verify()` could CRASH on a receipt whose payload lacked `payer` (the SDK matcher does
+  `payer.toLowerCase()`) — `isEip712Receipt` now requires `payer:string` and `receiptMatchesOffer` is
+  try/caught; (3) empty `LEDGERLINE_TENANT_ID` bypassed the demo-seller fallback (`|| undefined` guard
+  added); (4) `generateVerifierPackage`'s note claimed "official … re-verifiable" on ROW PRESENCE, not
+  validity — now gated on verifier steps 2+3 passing (the same overclaim the `/review` fixed in
+  `verify()` but missed here); (5) `recognize` CLI exited 0 when every event was `rejected_unsigned` —
+  now exits 2 + logs under enforcement; (6) `makePostgresSink`'s boot probe didn't check `ADAPTER_KEY_ID`
+  matches the private key (a mismatch would sign with the wrong keyId → silent recognition rejection) —
+  now derives + compares. 2 findings were not real-new: the keygen "silent collision" (false — loud
+  stderr + 2⁻¹²⁸ unreachable; added a cosmetic exit code) and the same-second offer-dedup edge (already
+  D-0012 above; corrected an understated code comment). Regression tests added for #2/#4(via existing)/#6
+  and a verifier-package no-overclaim test.
+- **Signer-registry pinning → M7 (founder decision at `/review`, 2026-06-02).** The canonical M6c claim
+  is exactly: **"official x402 signed offer/receipt captured and verified; signer registry pinning
+  deferred to M7."** The verifier checks an internally-consistent offer+receipt pair (same recovered
+  issuer, bound terms, amount tie) and that it binds to the Ledgerline `revenue_event`, but does NOT pin
+  the recovered signer to a *registered* seller key — so steps 2–3 are not standalone proof of seller
+  identity (a self-consistent forgery written under an attacker's own key, with DB write access, would
+  still pass). The verifier states this explicitly: step 2 emits
+  `receipt_signer_registry_binding=deferred/not-checked (M7)`. Closing it needs a trusted receipt-key
+  registry (registration/rotation/revocation/tenant ownership, analogous to M6b's `adapter_keys`) — the
+  M7 operated-key layer (`COMMERCIAL_BOUNDARY.md`); building a second registry surface now was
+  explicitly declined. The Arc-committed `revenue_event` remains the tamper-evident money record.
+- **Known edge → concurrency milestone:** EIP-712 offers are deterministic, so two DISTINCT paid calls
+  with identical terms in the same wall-clock second produce a byte-identical signed_offer; the global
+  `unique(tenant_id, artifact_type, artifact_hash)` keeps only one row, so the second interaction has a
+  receipt but no offer and (with the lone-receipt rule above) FAILS step 3. Cannot fire in M6c's surface
+  (the demo is sequential; the live loop is Track-A-gated). The fix when real concurrency lands is
+  per-interaction uniqueness for official artifacts (a migration splitting the analog's cross-interaction
+  dedup from the official rows' per-interaction rows); the analog/money path is unaffected.
+- **Out of scope (deferred):** the live end-to-end loop (real buyer + Gateway creds → real receipt) is
+  Track-A-gated, like the rest of the live demo; the offline issue→capture→verify→tamper path is fully
+  tested. Committing artifact hashes on-chain + hosted ingestion of official artifacts are M7/private.
+
+Verified: typecheck 11/11, vitest 186/186 (incl. 14 `x402-receipts` + anchor official-artifact /
+tamper / lone-receipt / malformed-receipt-no-crash / package-no-overclaim + recognition write-path
+tests), `pnpm test:security` 45/45 (incl. the keyId-mismatch boot check),
+`pnpm vectors:check` OK (frozen leaves unchanged), `pnpm contracts:test` 13/13, migration 0007 applies
+via the throwaway-DB harness.

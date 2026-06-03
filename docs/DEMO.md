@@ -51,10 +51,13 @@ For the strongest demo: ON-CHAIN mode (anchor creds set). Step 9 then reads the 
 
 ## If asked "what's real vs. roadmap?"
 
-Be straight (it builds credibility): the demo ships on the **Path C** receipt analog, not the official
-x402 signed receipt (Path B is spike-proven, next milestone). No hosted dashboard yet — CSV is the MVP
-substitute. Adapter-event authentication, SIWX, Gateway reconciliation, and cash-collection/refund
-flows are deferred and named in `docs/THREAT_MODEL.md`. Everything shown in `pnpm demo` is running
+Be straight (it builds credibility): the default demo run ships on the **Path C** receipt analog. **M6c**
+adds optional capture + verification of the **official x402 signed offer/receipt** (Path B) when
+`RECEIPT_SIGNING_KEY` is set — the verifier then checks the real EIP-712 signature, the offer↔receipt
+bind, and the amount tie-out. Say it precisely: *captured and verified, with signer-registry pinning
+deferred to M7* — M6c does not claim the recovered signer is a registered seller key. No hosted dashboard
+yet — CSV is the MVP substitute. Adapter-event authentication (M6b), SIWX, Gateway reconciliation, and
+cash-collection/refund flows are deferred and named in `docs/THREAT_MODEL.md`. Everything shown in `pnpm demo` is running
 code with passing tests and a real on-chain transaction.
 
 ## Backup / troubleshooting

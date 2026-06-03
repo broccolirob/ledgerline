@@ -11,10 +11,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "recognize": "tsx --env-file-if-exists=../../.env src/recognize-cli.ts",
     "export:csv": "tsx --env-file-if-exists=../../.env src/export-csv.ts",
-    "audit": "tsx --env-file-if-exists=../../.env src/audit.ts"
+    "audit": "tsx --env-file-if-exists=../../.env src/audit.ts",
+    "adapter:keygen": "tsx --env-file-if-exists=../../.env src/adapter-keygen-cli.ts"
   },
   "dependencies": {
     "@ledgerline/seller-client": "workspace:*",
+    "@ledgerline/x402-receipts": "workspace:*",
     "pg": "^8.21.0"
   },
   "devDependencies": {

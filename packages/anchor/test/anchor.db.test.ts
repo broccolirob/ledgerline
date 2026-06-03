@@ -3,7 +3,37 @@ import { keccak256 as viemKeccak } from 'viem';
 import type { Pool } from 'pg';
 import { keccak256 as canonicalKeccak, toHex } from '@ledgerline/canonical';
 import { buildBatch, verify, generateVerifierPackage, submitNextBatch } from '@ledgerline/anchor';
+import { createReceiptIssuer, generateReceiptSigningKey, offerReceiptArtifactHash } from '@ledgerline/x402-receipts';
 import { setupDatabase, dropDatabase, seedRecognized, TENANT } from './helpers';
+
+const ARC_NET = 'eip155:5042002';
+const SEED_PAYTO = '0xb5e1ffa698b8458260Af9D6316971b83CD72a72C';
+const SEED_RESOURCE = '/api/company-brief';
+
+/** Insert an official x402 artifact row (with artifact_json) for an interaction — mirrors what the
+ *  M6c recognition pass writes, used here to drive the verifier's steps 1-3 offline. */
+async function insertArtifact(
+  pool: Pool,
+  interactionId: string,
+  paymentIdentifier: string,
+  artifactType: 'signed_offer' | 'signed_receipt',
+  artifact: unknown,
+): Promise<void> {
+  await pool.query(
+    `insert into x402_payment_artifacts
+       (id, tenant_id, interaction_id, artifact_type, artifact_hash, artifact_json, payment_identifier)
+     values (gen_random_uuid(), $1, $2, $3, $4, $5::jsonb, $6)`,
+    [TENANT, interactionId, artifactType, offerReceiptArtifactHash(artifact), JSON.stringify(artifact), paymentIdentifier],
+  );
+}
+
+async function interactionForRevenue(pool: Pool, reId: string): Promise<{ id: string; payment_identifier: string }> {
+  return (await pool.query<{ id: string; payment_identifier: string }>(
+    `select i.id, i.payment_identifier from interactions i
+      join revenue_events re on re.interaction_id = i.id where re.id = $1`,
+    [reId],
+  )).rows[0]!;
+}
 
 const TEST_DB = 'ledgerline_test_anchor';
 
@@ -98,26 +128,109 @@ describe('verify (§17.6 14-step, Path-C re-scoped)', () => {
     expect(byN[14]!.status).toBe('skip'); // Arc finality not checked offline
   });
 
-  it('step 1/4 stay correct when a second artifact row exists (Path-B forward-compat: query scoped to payment_signature)', async () => {
+  it('official x402 signed offer + receipt (Path B) turn steps 1-3 into REAL passes', async () => {
     const [reId] = await seedRecognized(pool, 1);
     await buildBatch(pool, TENANT);
-    // simulate Path B landing: add a signed_receipt artifact row on the same interaction. The
-    // step-1/step-4 query must still select the payment_signature row, not this one.
-    const ix = (await pool.query<{ interaction_id: string; payment_identifier: string }>(
-      `select i.id as interaction_id, i.payment_identifier from interactions i
-        join revenue_events re on re.interaction_id = i.id where re.id = $1`,
-      [reId],
-    )).rows[0]!;
-    await pool.query(
-      `insert into x402_payment_artifacts (id, tenant_id, interaction_id, artifact_type, artifact_hash, payment_identifier)
-       values (gen_random_uuid(), $1, $2, 'signed_receipt', decode(repeat('cd',32),'hex'), 'DIFFERENT-IDENTIFIER')`,
-      [TENANT, ix.interaction_id],
-    );
+    const ix = await interactionForRevenue(pool, reId!);
+    // Issue REAL EIP-712 artifacts with the seeded terms (gross 3000, Arc network, same resource).
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    const receipt = await issuer.issueSignedReceipt(SEED_RESOURCE, '0x00000000000000000000000000000000000000a1', ARC_NET, ix.payment_identifier);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', receipt);
+
     const res = await verify(pool, reId!);
     const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
-    expect(byN[1]!.status).toBe('pass'); // still finds the payment_signature analog
-    expect(byN[4]!.status).toBe('pass'); // still compares the payment_signature's identifier, not the receipt's
+    expect(byN[1]!.status).toBe('pass'); // official signed receipt present (no longer the analog)
+    expect(byN[2]!.status).toBe('pass'); // EIP-712 signature verifies
+    expect(byN[3]!.status).toBe('pass'); // binds the offer, same issuer, offer.amount ties to gross 3000
+    expect(byN[4]!.status).toBe('pass'); // payment-identifier binding intact (analog still present)
     expect(res.pass).toBe(true);
+    // copy now POSITIVELY names the official artifact on this path (drops the analog hedge)
+    expect(`${byN[1]!.name} ${byN[1]!.detail}`).toMatch(/official x402 .*Signed Receipt/i);
+  });
+
+  it('a TAMPERED official receipt fails the verifier (step 3 catches the issuer mismatch)', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    const receipt = await issuer.issueSignedReceipt(SEED_RESOURCE, '0x00000000000000000000000000000000000000a1', ARC_NET, ix.payment_identifier);
+    // Tamper the receipt payload AFTER signing — it now recovers a DIFFERENT signer than the offer.
+    const tampered = { ...receipt, payload: { ...receipt.payload, payer: '0x00000000000000000000000000000000000000ff' } };
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', tampered);
+
+    const res = await verify(pool, reId!);
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(byN[3]!.status).toBe('fail'); // tampered receipt recovers a different issuer than the offer
+    expect(res.pass).toBe(false);
+  });
+
+  it('a VALID official receipt WITHOUT its offer fails the verifier (no lone-receipt pass via na)', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    // Issue a perfectly valid receipt but DO NOT capture its offer — it cannot be cross-checked, so the
+    // verifier must FAIL (step 3), not silently report `na` and let the whole checklist pass.
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const receipt = await issuer.issueSignedReceipt(SEED_RESOURCE, '0x00000000000000000000000000000000000000a1', ARC_NET, ix.payment_identifier);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', receipt);
+
+    const res = await verify(pool, reId!);
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(byN[2]!.status).toBe('pass'); // the signature itself verifies
+    expect(byN[3]!.status).toBe('fail'); // but with no offer it cannot bind -> fail (not na)
+    expect(res.pass).toBe(false);
+  });
+
+  it('a malformed official receipt (payload missing payer) does NOT crash verify() — steps 2/3 fail cleanly', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    // A receipt that passes a naive envelope check but whose payload has NO payer — the SDK matcher does
+    // payload.payer.toLowerCase(), which threw and crashed the whole verifier before the guard/try-catch.
+    const malformedReceipt = { format: 'eip712', signature: '0xdeadbeef', payload: { version: 1, network: ARC_NET, resourceUrl: SEED_RESOURCE, issuedAt: 1717200000 } };
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', malformedReceipt);
+
+    const res = await verify(pool, reId!); // must NOT throw
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(byN[2]!.status).toBe('fail'); // invalid receipt
+    expect(byN[3]!.status).toBe('fail'); // cannot bind
+    expect(res.pass).toBe(false);
+  });
+
+  it('verifier package does NOT overclaim "official … re-verifiable" when the receipt signature is invalid', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const ix = await interactionForRevenue(pool, reId!);
+    const issuer = createReceiptIssuer({ privateKey: generateReceiptSigningKey(), network: ARC_NET });
+    const offer = await issuer.issueSignedOffer(SEED_RESOURCE, { network: ARC_NET, asset: 'USDC', payTo: SEED_PAYTO, amount: '3000' });
+    const validReceipt = await issuer.issueSignedReceipt(SEED_RESOURCE, '0x00000000000000000000000000000000000000a1', ARC_NET, ix.payment_identifier);
+    const brokenReceipt = { ...validReceipt, signature: '0xdeadbeef' }; // shape-valid but signature won't verify
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_offer', offer);
+    await insertArtifact(pool, ix.id, ix.payment_identifier, 'signed_receipt', brokenReceipt);
+
+    const pkg = await generateVerifierPackage(pool, reId!);
+    expect(pkg.generatedNote).not.toMatch(/official x402.*captured \+ re-verifiable/i); // no overclaim on an invalid receipt
+    expect(pkg.generatedNote).toMatch(/receipt analog/i); // honest fallback note
+    expect(pkg.verification.pass).toBe(false); // step 2 fails on the broken signature
+  });
+
+  it('analog-only interaction still passes step 1 (Path C) with steps 2-3 na (backward-compat)', async () => {
+    const [reId] = await seedRecognized(pool, 1);
+    await buildBatch(pool, TENANT);
+    const res = await verify(pool, reId!);
+    const byN = Object.fromEntries(res.steps.map((s) => [s.n, s]));
+    expect(byN[1]!.status).toBe('pass'); // Path-C analog
+    expect(byN[2]!.status).toBe('na');
+    expect(byN[3]!.status).toBe('na');
+    expect(res.pass).toBe(true);
+    expect(`${byN[1]!.name} ${byN[1]!.detail}`).toMatch(/receipt analog/i);
   });
 
   it('no-overclaim: copy calls it a "receipt analog" and explicitly disclaims the official artifact', async () => {

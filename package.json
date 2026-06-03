@@ -17,6 +17,7 @@
     "db:wait": "until docker exec ledgerline-pg psql -U ledgerline -d ledgerline -c 'select 1' >/dev/null 2>&1; do echo 'waiting for postgres...'; sleep 1; done; echo 'postgres ready'",
     "db:migrate": "pnpm run db:wait && pnpm --filter @ledgerline/db migrate",
     "recognize": "pnpm --filter @ledgerline/recognition recognize",
+    "adapter:keygen": "pnpm --filter @ledgerline/recognition adapter:keygen",
     "export:csv": "pnpm --filter @ledgerline/recognition export:csv",
     "audit:balance": "pnpm --filter @ledgerline/recognition run audit",
     "anchor:build": "pnpm --filter @ledgerline/anchor run build-batch",

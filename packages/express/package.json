@@ -1,6 +1,7 @@
 {
   "name": "@ledgerline/express",
   "license": "Apache-2.0",
+  "description": "Reference Express adapter for Ledgerline: captures one Ledgerline receipt analog (Path C) per paid x402 call.",
   "version": "0.0.0",
   "private": true,
   "type": "module",

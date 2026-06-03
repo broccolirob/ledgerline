@@ -1,11 +1,20 @@
-// M5 security tests (§19) — recognition + capture layer.
-// T8 split overflow/dust · T1 fingerprint binding · parseReceipt fuzz · T6 adapter-sig HONESTY (negative).
-// Pure (no DB) except the T6 negative test, which asserts the schema-level gap on a throwaway DB.
+// M5/M6b security tests (§19) — recognition + capture layer.
+// T8 split overflow/dust · T1 fingerprint binding · parseReceipt fuzz · T9 export · T6 adapter-sig (POSITIVE control).
+// DB-backed tests use a throwaway database (T9 export; T6 signing — sign/verify, registry, round-trip).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Pool } from 'pg';
 import { allocateSplit, parseReceipt, runRecognitionPass, resolveDemoConfig, type SplitRuleRow, type RawEventRow } from '@ledgerline/recognition';
 import { generateCsvExports } from '../src/export-csv';
-import { computeRequestFingerprint } from '@ledgerline/seller-client';
+import {
+  computeRequestFingerprint,
+  generateAdapterKeyPair,
+  buildRawEventFromCapture,
+  signRawEvent,
+  writeRawEvent,
+  verifyRawEventSignature,
+  makePostgresSink,
+  type LedgerlineCaptureInput,
+} from '@ledgerline/seller-client';
 import { setupDatabase, dropDatabase, makeRawEvent, insertRawEvent, TENANT } from './helpers';
 
 const demoRules: SplitRuleRow[] = [
@@ -141,11 +150,42 @@ describe('T9 (export) — finance CSV exposes no raw URL / prompt / payer addres
   });
 });
 
-describe('T6 — adapter-event signing is NOT verified (documented gap, not a control)', () => {
-  // NEGATIVE test: proves the deferred control is genuinely absent, so THREAT_MODEL.md cannot
-  // claim adapter-event authentication it does not have. When M6 adds server-side verification,
-  // this test should flip (and the threat model row moves to ENFORCED).
-  const TEST_DB = 'ledgerline_sec_t6';
+// ----------------------------------------------------------------------------
+// T6 — adapter-event signing IS verified (M6b). Was a negative gap test; now a positive control.
+// ----------------------------------------------------------------------------
+
+/** A delivered demo capture for the demo tenant, distinct per settlementReference. */
+function demoCapture(settlementReference: string): LedgerlineCaptureInput {
+  return {
+    endpointId: 'company-brief-v1',
+    schemaVersion: 'm1.1',
+    method: 'POST',
+    resourcePath: '/api/company-brief',
+    payment: {
+      verified: true,
+      payer: '0x' + 'b'.repeat(40),
+      amountAtomic: '3000',
+      network: 'eip155:5042002',
+      asset: 'USDC',
+      payTo: '0xseller',
+      settlementReference,
+      paymentSignatureHeader: `hdr-${settlementReference}`,
+    },
+    delivery: { status: 'delivered', httpStatus: 200, latencyMs: 1 },
+    occurredAt: new Date('2026-05-29T00:00:00.000Z'),
+  };
+}
+
+async function registerKey(pool: Pool, keyId: string, publicKeyPem: string, status = 'active'): Promise<void> {
+  await pool.query(
+    `insert into adapter_keys (tenant_id, key_id, public_key, status) values ($1,$2,$3,$4)
+     on conflict (tenant_id, key_id) do nothing`,
+    [TENANT, keyId, publicKeyPem, status],
+  );
+}
+
+describe('T6 — adapter-event signing IS verified (positive control)', () => {
+  const TEST_DB = 'ledgerline_sec_t6_pos';
   let pool: Pool;
   beforeAll(async () => {
     pool = await setupDatabase(TEST_DB);
@@ -154,16 +194,174 @@ describe('T6 — adapter-event signing is NOT verified (documented gap, not a co
     await dropDatabase(pool, TEST_DB);
   });
 
-  it('recognized events carry NO adapter signature — recognition does not authenticate the capturing adapter', async () => {
-    await insertRawEvent(pool, makeRawEvent({ settlementReference: 't6-sec' }));
-    const cfg = await resolveDemoConfig(pool, TENANT);
-    const summary = await runRecognitionPass(pool, cfg);
-    expect(summary.recognized).toBeGreaterThanOrEqual(1); // it recognized WITHOUT any signature check
-    // raw_events.adapter_signature is written null by the capture path; recognition never checks it.
-    const sig = await pool.query<{ n: string }>(
-      `select count(*) n from raw_events where tenant_id=$1 and adapter_signature is not null`,
-      [TENANT],
+  it('only a validly-signed event from an active registered key becomes revenue; everything else is rejected', async () => {
+    const valid = generateAdapterKeyPair();
+    const revoked = generateAdapterKeyPair();
+    const unknown = generateAdapterKeyPair(); // never registered
+    await registerKey(pool, valid.keyId, valid.publicKeyPem, 'active');
+    await registerKey(pool, revoked.keyId, revoked.publicKeyPem, 'active');
+    await pool.query(`update adapter_keys set status='revoked', revoked_at=now() where tenant_id=$1 and key_id=$2`, [
+      TENANT,
+      revoked.keyId,
+    ]);
+
+    // (1) valid signed → recognized
+    await writeRawEvent(
+      pool,
+      signRawEvent(buildRawEventFromCapture(TENANT, demoCapture('t6-valid')), {
+        keyId: valid.keyId,
+        privateKeyPem: valid.privateKeyPem,
+      }),
     );
-    expect(sig.rows[0]!.n).toBe('0'); // gap is real: no adapter event is signed/verified today
+    // (2) unsigned → rejected
+    await writeRawEvent(pool, buildRawEventFromCapture(TENANT, demoCapture('t6-unsigned')));
+    // (3) forged: signed by the valid key, then payload tampered AFTER signing → rejected
+    const signed = signRawEvent(buildRawEventFromCapture(TENANT, demoCapture('t6-forged')), {
+      keyId: valid.keyId,
+      privateKeyPem: valid.privateKeyPem,
+    });
+    await writeRawEvent(pool, {
+      ...signed,
+      payloadRedacted: {
+        ...signed.payloadRedacted,
+        payment: { ...(signed.payloadRedacted.payment as Record<string, unknown>), amountAtomic: '9999' },
+      },
+    });
+    // (4) signed by an UNREGISTERED key → rejected
+    await writeRawEvent(
+      pool,
+      signRawEvent(buildRawEventFromCapture(TENANT, demoCapture('t6-unknown')), {
+        keyId: unknown.keyId,
+        privateKeyPem: unknown.privateKeyPem,
+      }),
+    );
+    // (5) signed by a REVOKED key → rejected (resolveAdapterKeys returns only active keys)
+    await writeRawEvent(
+      pool,
+      signRawEvent(buildRawEventFromCapture(TENANT, demoCapture('t6-revoked')), {
+        keyId: revoked.keyId,
+        privateKeyPem: revoked.privateKeyPem,
+      }),
+    );
+
+    const cfg = { ...(await resolveDemoConfig(pool, TENANT)), requireAdapterSignature: true };
+    const summary = await runRecognitionPass(pool, cfg);
+
+    expect(summary.total).toBe(5);
+    expect(summary.recognized).toBe(1); // only the validly-signed event
+    expect(summary.rejectedUnsigned).toBe(4); // unsigned + forged + unknown-key + revoked-key
+    expect(summary.errors).toHaveLength(0);
+
+    const rev = await pool.query<{ n: string }>(`select count(*) n from revenue_events where tenant_id=$1`, [TENANT]);
+    expect(rev.rows[0]!.n).toBe('1'); // exactly one revenue event — the valid one
+  });
+});
+
+describe('T6 — signature verification is opt-in (backward-compat)', () => {
+  const TEST_DB = 'ledgerline_sec_t6_compat';
+  let pool: Pool;
+  beforeAll(async () => {
+    pool = await setupDatabase(TEST_DB);
+  }, 60_000);
+  afterAll(async () => {
+    await dropDatabase(pool, TEST_DB);
+  });
+
+  it('with requireAdapterSignature OFF (default), an UNSIGNED event still recognizes — existing captures unaffected', async () => {
+    await writeRawEvent(pool, buildRawEventFromCapture(TENANT, demoCapture('t6-compat')));
+    const cfg = await resolveDemoConfig(pool, TENANT); // requireAdapterSignature undefined → off
+    const summary = await runRecognitionPass(pool, cfg);
+    expect(summary.recognized).toBe(1);
+    expect(summary.rejectedUnsigned).toBe(0);
+  });
+});
+
+describe('M6b — makePostgresSink fails fast on a malformed signing key (no silent capture loss)', () => {
+  it('throws at sink construction for an invalid Ed25519 private key', () => {
+    expect(() =>
+      makePostgresSink({} as never, { tenantId: TENANT, signer: { keyId: 'k', privateKeyPem: 'not-a-valid-pem' } }),
+    ).toThrow(/invalid adapter signing key/i);
+  });
+  it('accepts a valid keypair without throwing', () => {
+    const kp = generateAdapterKeyPair();
+    expect(() =>
+      makePostgresSink({} as never, { tenantId: TENANT, signer: { keyId: kp.keyId, privateKeyPem: kp.privateKeyPem } }),
+    ).not.toThrow();
+  });
+  it('throws when ADAPTER_KEY_ID does not match the private key (else events would be silently rejected)', () => {
+    const a = generateAdapterKeyPair();
+    const b = generateAdapterKeyPair(); // a different key's id paired with a's private key
+    expect(() =>
+      makePostgresSink({} as never, { tenantId: TENANT, signer: { keyId: b.keyId, privateKeyPem: a.privateKeyPem } }),
+    ).toThrow(/does not match/i);
+  });
+});
+
+describe('T6 — a signed event survives the DB round-trip (jsonb/text) and verifies', () => {
+  const TEST_DB = 'ledgerline_sec_t6_rt';
+  let pool: Pool;
+  beforeAll(async () => {
+    pool = await setupDatabase(TEST_DB);
+  }, 60_000);
+  afterAll(async () => {
+    await dropDatabase(pool, TEST_DB);
+  });
+
+  it('verifies after sign → writeRawEvent → reload; a tampered reload fails', async () => {
+    const kp = generateAdapterKeyPair();
+    await registerKey(pool, kp.keyId, kp.publicKeyPem, 'active');
+    await writeRawEvent(
+      pool,
+      signRawEvent(buildRawEventFromCapture(TENANT, demoCapture('t6-rt')), {
+        keyId: kp.keyId,
+        privateKeyPem: kp.privateKeyPem,
+      }),
+    );
+
+    const row = (
+      await pool.query<{ idempotency_key: string; payload_redacted: Record<string, unknown>; adapter_signature: string }>(
+        `select idempotency_key, payload_redacted, adapter_signature from raw_events where tenant_id=$1 and adapter_key_id=$2`,
+        [TENANT, kp.keyId],
+      )
+    ).rows[0]!;
+
+    // the signed bytes survive the jsonb/text round-trip
+    expect(
+      verifyRawEventSignature(
+        { tenantId: TENANT, idempotencyKey: row.idempotency_key, payloadRedacted: row.payload_redacted },
+        row.adapter_signature,
+        kp.publicKeyPem,
+      ),
+    ).toBe(true);
+
+    // tampering the reloaded payload breaks verification
+    const tampered = {
+      ...row.payload_redacted,
+      payment: { ...(row.payload_redacted.payment as Record<string, unknown>), amountAtomic: '9999' },
+    };
+    expect(
+      verifyRawEventSignature(
+        { tenantId: TENANT, idempotencyKey: row.idempotency_key, payloadRedacted: tampered },
+        row.adapter_signature,
+        kp.publicKeyPem,
+      ),
+    ).toBe(false);
+
+    // the (tenantId, idempotencyKey) binding is load-bearing: a valid signature does NOT verify when
+    // transplanted onto a different event identity (replay / cross-event / cross-tenant transplant).
+    expect(
+      verifyRawEventSignature(
+        { tenantId: TENANT, idempotencyKey: `${row.idempotency_key}-other`, payloadRedacted: row.payload_redacted },
+        row.adapter_signature,
+        kp.publicKeyPem,
+      ),
+    ).toBe(false);
+    expect(
+      verifyRawEventSignature(
+        { tenantId: '00000000-0000-4000-8000-0000000000ff', idempotencyKey: row.idempotency_key, payloadRedacted: row.payload_redacted },
+        row.adapter_signature,
+        kp.publicKeyPem,
+      ),
+    ).toBe(false);
   });
 });

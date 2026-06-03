@@ -14,6 +14,7 @@ export default defineConfig({
       '@ledgerline/seller-client': resolve(root, 'packages/seller-client/src/index.ts'),
       '@ledgerline/canonical': resolve(root, 'packages/canonical/src/index.ts'),
       '@ledgerline/anchor': resolve(root, 'packages/anchor/src/index.ts'),
+      '@ledgerline/x402-receipts': resolve(root, 'packages/x402-receipts/src/index.ts'),
     },
   },
   test: {

@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { createGatewayMiddleware } from '@circle-fin/x402-batching/server';
 import { ledgerlineRecorder } from '@ledgerline/express';
 import { makePostgresSink } from '@ledgerline/seller-client';
+import { createReceiptIssuer, type ReceiptIssuer } from '@ledgerline/x402-receipts';
 
 const DEFAULT_DSN = 'postgresql://ledgerline:ledgerline@localhost:5433/ledgerline';
 // Demo tenant, seeded by migration 0002. The raw_events FK -> tenants requires this row to exist.
@@ -39,8 +40,54 @@ if (!sellerAddress) {
   // Local Postgres sink: each delivered paid call writes ONE raw_event (the Ledgerline receipt
   // analog). The pool is lazy — it only connects on the first capture.
   const pool = new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_DSN });
-  const tenantId = process.env.LEDGERLINE_TENANT_ID ?? DEMO_TENANT_ID;
-  const sink = makePostgresSink(pool, { tenantId });
+  // `|| undefined` so a set-but-EMPTY env var falls back to the demo tenant (bare `??` only catches
+  // undefined; an empty string would bind '' into a uuid NOT NULL column and the capture would silently
+  // fail in res.finish). Mirrors the guard at the 7 other tenant read sites (D-0010/M5 fix).
+  const tenantId = (process.env.LEDGERLINE_TENANT_ID || undefined) ?? DEMO_TENANT_ID;
+  // M6b (optional): sign captured events when an adapter key is configured (`pnpm adapter:keygen`).
+  // Unsigned by default; recognition only ENFORCES signatures when requireAdapterSignature is set.
+  const hasKey = Boolean(process.env.ADAPTER_SIGNING_KEY);
+  const hasKeyId = Boolean(process.env.ADAPTER_KEY_ID);
+  if (hasKey !== hasKeyId) {
+    console.warn(
+      '[demo-seller] only one of ADAPTER_SIGNING_KEY / ADAPTER_KEY_ID is set — signing is OFF. Set both (from `pnpm adapter:keygen`) or neither.',
+    );
+  }
+  const signer =
+    hasKey && hasKeyId
+      ? { keyId: process.env.ADAPTER_KEY_ID!, privateKeyPem: process.env.ADAPTER_SIGNING_KEY! }
+      : undefined;
+  console.log(`[demo-seller] adapter signing ${signer ? `ENABLED (keyId=${signer.keyId})` : 'disabled'}`);
+  const sink = makePostgresSink(pool, { tenantId, signer }); // throws at boot if the key is malformed
+
+  // M6c (Path B): when a dedicated receipt-signing key is configured, ALSO issue the OFFICIAL x402
+  // EIP-712 signed offer/receipt per paid call and capture them alongside the analog (approach B —
+  // running parallel to Circle's createGatewayMiddleware, which still owns the 402 + settlement).
+  // RECEIPT_SIGNING_KEY is a secp256k1 EOA key DISTINCT from the seller's receive address (spec
+  // requirement); it only SIGNS offers/receipts and never settles. No key -> analog-only (unchanged).
+  const NETWORK = 'eip155:5042002';
+  // The official x402 OfferPayload.asset is a TOKEN CONTRACT ADDRESS (or 'native'), NOT a human label —
+  // so the Path-B offer must carry the USDC contract address, not the 'USDC' label the analog/ledger
+  // path uses. (Arc Testnet USDC; override with USDC_CONTRACT if it changes.)
+  const USDC_ASSET = process.env.USDC_CONTRACT ?? '0x3600000000000000000000000000000000000000';
+  let receiptIssuer: ReceiptIssuer | undefined;
+  if (process.env.RECEIPT_SIGNING_KEY) {
+    receiptIssuer = createReceiptIssuer({
+      privateKey: process.env.RECEIPT_SIGNING_KEY as `0x${string}`, // viem validates; boot fails loudly if malformed
+      network: NETWORK,
+    });
+    if (receiptIssuer.address.toLowerCase() === sellerAddress.toLowerCase()) {
+      // Fail loudly at boot (not a warning): the x402 spec requires the offer/receipt signer to be
+      // DISTINCT from payTo. Reusing the receive key to sign artifacts is a key-segregation failure.
+      throw new Error(
+        '[demo-seller] RECEIPT_SIGNING_KEY resolves to the seller address (payTo) — use a DISTINCT ' +
+          'dedicated key (x402 spec: the offer/receipt signer MUST NOT be payTo).',
+      );
+    }
+    console.log(`[demo-seller] official x402 offer/receipt issuance ENABLED (signer=${receiptIssuer.address})`);
+  } else {
+    console.log('[demo-seller] official x402 offer/receipt issuance disabled (set RECEIPT_SIGNING_KEY to enable Path B)');
+  }
 
   app.post(
     '/api/company-brief',
@@ -50,6 +97,25 @@ if (!sellerAddress) {
       schemaVersion: 'm1.1',
       payTo: sellerAddress,
       sink, // captured on res 'finish' -> writeRawEvent into Postgres
+      // Path B issuance (only when RECEIPT_SIGNING_KEY is set); errors here never lose the analog.
+      ...(receiptIssuer
+        ? {
+            issueOfficialArtifacts: async (ctx) => ({
+              signedOffer: await receiptIssuer!.issueSignedOffer(ctx.resourcePath, {
+                network: ctx.network,
+                asset: USDC_ASSET, // token CONTRACT address (spec), not the 'USDC' analog label in ctx.asset
+                payTo: ctx.payTo ?? sellerAddress,
+                amount: ctx.amountAtomic,
+              }),
+              signedReceipt: await receiptIssuer!.issueSignedReceipt(
+                ctx.resourcePath,
+                ctx.payer,
+                ctx.network,
+                ctx.settlementReference,
+              ),
+            }),
+          }
+        : {}),
     }),
     (_req: Request, res: Response) => {
       // Canned output for M0/M1. The recorder captures the paid-delivery analog on finish.

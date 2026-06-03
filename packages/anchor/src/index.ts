@@ -26,6 +26,8 @@ import {
   METADATA_POLICY_DESCRIPTOR,
   assertClosedLeafSchema,
 } from '@ledgerline/canonical';
+// M6c (Path B): re-verify the OFFICIAL x402 EIP-712 offer/receipt artifacts (verifier steps 1-3).
+import { verifySignedOffer, verifySignedReceipt, receiptMatchesOffer } from '@ledgerline/x402-receipts';
 
 export type { Db };
 
@@ -410,29 +412,73 @@ export async function verify(db: Db, revenueEventId: string, opts: VerifyOptions
     );
   }
 
-  // ---- steps 1-3: Path-C receipt analog (NO official x402 Signed Receipt — D-0001) ----
-  // Scope to the payment_signature artifact explicitly: an interaction MAY hold multiple artifact
-  // rows (signed_offer / payment_signature / signed_receipt — unique key is per artifact_type), so
-  // `rows[0]` would be arbitrary once Path B adds a second row. Filter + order deterministically.
-  const artRes = await db.query<{ artifact_type: string; payment_identifier: string | null }>(
-    `select artifact_type, payment_identifier from x402_payment_artifacts
-      where tenant_id = $1 and interaction_id = $2 and artifact_type = 'payment_signature'
-      order by created_at limit 1`,
+  // ---- steps 1-3: prefer the OFFICIAL x402 Signed Offer/Receipt (Path B, M6c); else the Path-C
+  // analog (honest, re-scoped). An interaction MAY hold several artifact rows (one per artifact_type),
+  // so load all three deterministically rather than rows[0]. artifact_json (migration 0007) carries
+  // the full signed artifact for offline EIP-712 re-verification.
+  const artsRes = await db.query<{ artifact_type: string; payment_identifier: string | null; artifact_json: unknown }>(
+    `select artifact_type, payment_identifier, artifact_json from x402_payment_artifacts
+      where tenant_id = $1 and interaction_id = $2
+        and artifact_type in ('payment_signature', 'signed_offer', 'signed_receipt')
+      order by created_at`,
     [re.tenant_id, re.interaction_id],
   );
-  const art = artRes.rows[0];
+  const analogArt = artsRes.rows.find((a) => a.artifact_type === 'payment_signature');
+  const offerArt = artsRes.rows.find((a) => a.artifact_type === 'signed_offer');
+  const receiptArt = artsRes.rows.find((a) => a.artifact_type === 'signed_receipt');
+  // step-4 binding uses the payment_identifier (all artifact rows share r.idempotencyAnchor).
+  const art = analogArt ?? receiptArt ?? offerArt;
   const ixRes = await db.query<{ id: string; request_fingerprint: Buffer | null; payment_identifier: string | null; status: string }>(
     `select id, request_fingerprint, payment_identifier, status from interactions where id = $1`,
     [re.interaction_id],
   );
   const ix = ixRes.rows[0];
-  if (art && art.artifact_type === 'payment_signature') {
+
+  // EIP-712 verification of the official artifacts (null when absent or invalid).
+  const vReceipt = receiptArt ? await verifySignedReceipt(receiptArt.artifact_json) : null;
+  const vOffer = offerArt ? await verifySignedOffer(offerArt.artifact_json) : null;
+
+  // step 1: a VALID official receipt is present (preferred); else the Path-C analog (honest fallback).
+  // The "official" label REQUIRES the EIP-712 signature to verify (vReceipt) — a present-but-invalid
+  // signed_receipt row must NOT earn the official label (step 2 also fails it). Review hardening (M6c).
+  if (receiptArt && vReceipt) {
+    add(1, 'signed receipt present', 'pass', 'official x402 EIP-712 Signed Receipt captured (artifact_type=signed_receipt)');
+  } else if (analogArt) {
     add(1, 'receipt analog present (Path C)', 'pass', "Ledgerline receipt analog (artifact_type='payment_signature'); NOT an official x402 Signed Receipt");
+  } else if (receiptArt) {
+    add(1, 'signed receipt present', 'fail', 'signed_receipt present but its EIP-712 signature does not verify (no valid analog either)');
   } else {
-    add(1, 'receipt analog present (Path C)', 'fail', 'no payment_signature artifact for this interaction');
+    add(1, 'receipt present', 'fail', 'no signed_receipt or payment_signature artifact for this interaction');
   }
-  add(2, 'signed receipt valid', 'na', 'no official x402 Signed Receipt in Path C (deferred to the Path-B receipt milestone)');
-  add(3, 'receipt matches offer', 'na', 'no official x402 Signed Offer in Path C');
+
+  // step 2: the official receipt's EIP-712 signature verifies (recovers a signer). HONEST SCOPE: this
+  // proves the artifact is a well-formed signed receipt and (with step 3) that offer+receipt share one
+  // issuer — it does NOT yet pin that issuer to a REGISTERED seller key (the operated receipt-key
+  // registry is M7), so step 2 alone is not proof of seller identity. `na` on the pure analog path.
+  if (receiptArt) {
+    add(2, 'signed receipt valid', vReceipt ? 'pass' : 'fail', vReceipt ? `official x402 receipt EIP-712 signature verifies; recovered signer ${vReceipt.signer}; receipt_signer_registry_binding=deferred/not-checked (M7 — recovered signer is NOT pinned to a registered seller key)` : 'signed_receipt EIP-712 verification failed (malformed/garbage signature)');
+  } else {
+    add(2, 'signed receipt valid', 'na', 'no official x402 Signed Receipt (Path-C analog path; steps 1-3 re-scoped)');
+  }
+
+  // step 3: the official receipt binds to its official offer (same resource+network), both recover to the
+  // SAME issuer (tamper-evident across the pair), and the offer amount ties to the committed revenue
+  // gross. An official receipt WITHOUT its offer cannot be cross-checked, so it FAILS (not `na`) — that
+  // closes the hole where a lone tampered/forged receipt would pass via `na`. `na` is reserved for the
+  // pure analog path (no official receipt at all), which stays backward-compatible.
+  if (receiptArt && offerArt) {
+    const bind = receiptMatchesOffer(receiptArt.artifact_json, offerArt.artifact_json);
+    const sameIssuer = !!vReceipt && !!vOffer && vReceipt.signer.toLowerCase() === vOffer.signer.toLowerCase();
+    const amountOk = !!vOffer && /^[0-9]+$/.test(String(vOffer.payload.amount)) && BigInt(vOffer.payload.amount) === BigInt(re.gross_amount_atomic);
+    const ok = bind && sameIssuer && amountOk;
+    add(3, 'receipt matches offer', ok ? 'pass' : 'fail', `receipt↔offer bind=${bind}; same-issuer=${sameIssuer}; offer.amount ${vOffer?.payload.amount ?? '?'} == revenue gross ${re.gross_amount_atomic}=${amountOk}`);
+  } else if (receiptArt) {
+    add(3, 'receipt matches offer', 'fail', 'official signed_receipt present but no signed_offer to cross-check (cannot bind the receipt to offer terms / a single issuer)');
+  } else if (offerArt) {
+    add(3, 'receipt matches offer', 'na', 'official signed_offer present but no signed_receipt to cross-check (offer not bound; Path-C analog path)');
+  } else {
+    add(3, 'receipt matches offer', 'na', 'no official x402 Signed Offer or Receipt (Path-C analog path)');
+  }
 
   // ---- step 4: payment-identifier ↔ request fingerprint ----
   const bindingOk = !!ix && !!ix.request_fingerprint && !!ix.payment_identifier && !!art && art.payment_identifier === ix.payment_identifier;
@@ -626,21 +672,36 @@ export async function generateVerifierPackage(db: Db, revenueEventId: string): P
   )).rows;
   const interaction = (await db.query(`select id, status, payment_identifier from interactions where id = $1`, [re.interaction_id])).rows[0];
   const delivery = (await db.query(`select delivery_status, http_status from service_deliveries where interaction_id = $1`, [re.interaction_id])).rows[0];
-  const artifact = (await db.query(`select artifact_type, amount_atomic, settlement_reference from x402_payment_artifacts where interaction_id = $1`, [re.interaction_id])).rows[0];
+  // M6c: disclose ALL artifact rows incl. artifact_json (so a third party can re-verify the official
+  // EIP-712 offer/receipt offline).
+  const artifacts = (await db.query(
+    `select artifact_type, amount_atomic, settlement_reference, artifact_json
+       from x402_payment_artifacts
+      where interaction_id = $1 and artifact_type in ('payment_signature', 'signed_offer', 'signed_receipt')
+      order by artifact_type`,
+    [re.interaction_id],
+  )).rows as Array<Record<string, unknown>>;
+  // The official-path note must be gated on VALIDITY, not row presence (mirrors verify() step 1): only
+  // claim "official ... re-verifiable" when the verifier's official steps 2 (receipt EIP-712 valid) AND
+  // 3 (receipt↔offer bind + same issuer + amount tie) both pass. A present-but-invalid receipt row keeps
+  // the honest Path-C note.
+  const stepStatus = (n: number): StepStatus | undefined => verification.steps.find((s) => s.n === n)?.status;
+  const officialVerified = stepStatus(2) === 'pass' && stepStatus(3) === 'pass';
 
   const toHexBytea = (v: unknown): unknown => (Buffer.isBuffer(v) ? '0x' + v.toString('hex') : v);
   const redact = (o: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, toHexBytea(v)]));
 
   return {
     revenueEventId,
-    generatedNote:
-      'Ledgerline receipt analog (Path C) — NOT an official x402 Signed Receipt. Tamper-evident via the Arc-committed Merkle root.',
+    generatedNote: officialVerified
+      ? 'Official x402 EIP-712 Signed Offer/Receipt captured + re-verifiable here (Path B); the revenue_event it produced is tamper-evident via the Arc-committed Merkle root.'
+      : 'Ledgerline receipt analog (Path C) — NOT an official x402 Signed Receipt. Tamper-evident via the Arc-committed Merkle root.',
     records: {
       revenue_event: redact(re),
       ledger_entries: ledgerEntries.map((r) => redact(r as Record<string, unknown>)),
       interaction: interaction ? redact(interaction as Record<string, unknown>) : null,
       service_delivery: delivery ?? null,
-      x402_payment_artifact: artifact ? redact(artifact as Record<string, unknown>) : null,
+      x402_payment_artifacts: artifacts.map((a) => redact(a)),
     },
     merkleProof: { leafIndex: blRow.leaf_index, siblings: proof.siblings.map((s) => ({ hash: toHex(s.hash), side: s.side })) },
     batch: {
